@@ -1,0 +1,2 @@
+first_name,last_name,title,email,company_name,company_description,website_url
+REPLACE-ME,Doe,Managing Director,REPLACE-ME@example.com,Example Ltd,"One or two sentences on what the company does — the AI uses this to personalize the pitch.",https://example.com

@@ -8,7 +8,7 @@ fi
 # Activate it
 source venv/bin/activate
 
-echo "[!] Starting Phase 2: Web Approval Server (Running in background on port 5000)..."
+echo "[!] Starting Phase 2: Web Approval Server (Running in background on port 5001)..."
 python3 -W ignore scripts/approval_server.py &
 SERVER_PID=$!
 

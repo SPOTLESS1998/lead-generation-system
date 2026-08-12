@@ -1,0 +1,31 @@
+{
+  "client_name": "Ejentic AI",
+  "from_name": "Ejentic AI Outreach",
+  "reply_to": null,
+  "physical_address": "REPLACE-ME: your business postal address (required by CAN-SPAM before real sends)",
+  "unsubscribe_base_url": "http://localhost:5001",
+  "copy_provider": "gemini",
+  "gemini_model": "gemini-2.5-flash",
+  "nvidia_model": "meta/llama-3.1-70b-instruct",
+  "demo_mode": false,
+  "sending": {
+    "mode": "controlled",
+    "controlled_inbox_env": "SMTP_USER",
+    "daily_global_cap": 50,
+    "throttle_seconds": { "min": 20, "max": 60 },
+    "mailboxes": [
+      {
+        "smtp_host": "smtp.gmail.com",
+        "smtp_port": 587,
+        "user_env": "SMTP_USER",
+        "pass_env": "SMTP_PASS",
+        "daily_cap": 40
+      }
+    ]
+  },
+  "target_niches": [
+    "local accounting firms lagos nigeria",
+    "real estate agencies abuja",
+    "e-commerce fashion stores nigeria"
+  ]
+}
