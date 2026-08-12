@@ -3,20 +3,12 @@ warnings.filterwarnings('ignore')
 
 import os
 import sys
-import json
-import uuid
 import time
-import smtplib
-import requests
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core import config, state, suppression, leads as leads_source
-
-# The pending-draft queue the approval server reads (transient hand-off; git-ignored).
-PENDING_LEADS_FILE = os.path.join(config.ROOT, "pending_leads.json")
+from core import config, state, suppression, review, leads as leads_source
+from core.ai import generate
 
 # Safety valve: how many drafts to prepare in a single run (no point drafting more
 # than a day's sending capacity). The sending cap is enforced separately at send time.
@@ -28,59 +20,9 @@ def print_step(step):
 
 
 # --------------------------------------------------------------------------
-# AI copy generation — Gemini primary (mandated), NVIDIA an automatic fallback.
+# AI copy generation — provider fallback lives in core/ai.py (shared with the
+# reply agent). These two functions just build the prompts.
 # --------------------------------------------------------------------------
-
-def _gemini_chat(cfg, prompt):
-    from google import genai
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY not set")
-    client = genai.Client(api_key=api_key)
-    resp = client.models.generate_content(model=cfg["gemini_model"], contents=prompt)
-    text = (getattr(resp, "text", None) or "").strip()
-    if not text:
-        raise RuntimeError("Gemini returned empty text")
-    return text
-
-
-def _nvidia_chat(cfg, prompt, temperature=0.4, max_tokens=400):
-    api_key = os.environ.get("NVIDIA_API_KEY")
-    if not api_key:
-        raise RuntimeError("NVIDIA_API_KEY not set")
-    resp = requests.post(
-        "https://integrate.api.nvidia.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
-            "model": cfg["nvidia_model"],
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        },
-        timeout=30,
-    )
-    if resp.status_code != 200:
-        raise RuntimeError(f"NVIDIA API {resp.status_code}: {resp.text[:200]}")
-    return resp.json()["choices"][0]["message"]["content"].strip()
-
-
-def generate(cfg, prompt):
-    """Generate text using the configured provider, falling back to the other.
-
-    Returns (text, provider_used). Mirrors the fallback-chain pattern used in the
-    RAG system: try the mandated engine, degrade gracefully rather than crash.
-    """
-    order = ["gemini", "nvidia"] if cfg.get("copy_provider") == "gemini" else ["nvidia", "gemini"]
-    last_err = None
-    for provider in order:
-        try:
-            text = _gemini_chat(cfg, prompt) if provider == "gemini" else _nvidia_chat(cfg, prompt)
-            return text, provider
-        except Exception as e:
-            last_err = e
-            print(f"⚠️  {provider} generation failed ({e}); trying fallback...")
-    raise RuntimeError(f"All copy providers failed. Last error: {last_err}")
-
 
 def generate_strategy(cfg, lead):
     print_step(f"🧠 [Strategist] Analyzing {lead['company_name']}...")
@@ -150,74 +92,6 @@ def get_demo_pitch(company_name):
 
 
 # --------------------------------------------------------------------------
-# Draft queue + operator notification
-# --------------------------------------------------------------------------
-
-def save_pending_lead(lead_id, data):
-    leads = {}
-    if os.path.exists(PENDING_LEADS_FILE):
-        with open(PENDING_LEADS_FILE, "r") as f:
-            try:
-                leads = json.load(f)
-            except json.JSONDecodeError:
-                pass
-    leads[lead_id] = data
-    with open(PENDING_LEADS_FILE, "w") as f:
-        json.dump(leads, f, indent=4)
-
-
-def send_approval_request_email(cfg, lead_id, lead, drafted_subject, drafted_body):
-    """Notify the operator (their own inbox) with 1-click approve/decline links."""
-    smtp_user = os.environ["SMTP_USER"]
-    smtp_pass = os.environ["SMTP_PASS"]
-    dashboard = (cfg.get("unsubscribe_base_url") or "http://localhost:5001").rstrip("/")
-    print_step(f"📧 Sending approval request for {lead['company_name']} to your inbox...")
-    try:
-        msg = MIMEMultipart("alternative")
-        msg['From'] = f"{cfg['client_name']} System <{smtp_user}>"
-        msg['To'] = smtp_user
-        msg['Subject'] = f"[ACTION REQUIRED] Review pitch for {lead['company_name']}"
-
-        html_body = drafted_body.replace(chr(10), '<br>')
-        html_content = f"""
-        <html>
-          <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-            <h2>{cfg['client_name']} - Approval Request</h2>
-            <p>Your AI system scouted a lead and drafted a personalized pitch.</p>
-            <div style="background:#f9f9f9; padding:15px; border-left:4px solid #0056b3; margin-bottom:20px;">
-                <strong>LEAD:</strong><br>
-                Company: {lead['company_name']}<br>
-                Decision Maker: {lead['first_name']} {lead['last_name']} ({lead['title']})<br>
-                Prospect Email: {lead['email']}
-            </div>
-            <div style="background:#f1f8e9; padding:15px; border-left:4px solid #4CAF50; margin-bottom:20px;">
-                <strong>PROPOSED PITCH:</strong><br>
-                <strong>Subject:</strong> {drafted_subject}<br><br>
-                {html_body}
-            </div>
-            <p>Click to process this lead (the approved email goes to your controlled inbox in demo mode):</p>
-            <a href="{dashboard}/approve/{lead_id}" style="background:#4CAF50; color:white; padding:14px 25px; text-decoration:none; border-radius:4px; font-weight:bold; margin-right:15px;">✅ APPROVE &amp; SEND</a>
-            <a href="{dashboard}/decline/{lead_id}" style="background:#f44336; color:white; padding:14px 25px; text-decoration:none; border-radius:4px; font-weight:bold;">❌ DECLINE</a>
-            <p style="margin-top:30px; font-size:12px; color:#777;">Click these on the machine running the approval server ({dashboard}).</p>
-          </body>
-        </html>
-        """
-        msg.attach(MIMEText("Please view this email in an HTML compatible client.", 'plain'))
-        msg.attach(MIMEText(html_content, 'html'))
-
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(smtp_user, smtp_pass)
-        server.sendmail(smtp_user, smtp_user, msg.as_string())
-        server.quit()
-        print("✅ Approval request sent! Check your inbox.")
-        return True
-    except Exception as e:
-        print(f"❌ Error sending approval request: {e}")
-        return False
-
-
-# --------------------------------------------------------------------------
 # Main pipeline
 # --------------------------------------------------------------------------
 
@@ -272,17 +146,19 @@ def main():
         print(f"Subject: {subject}   (drafted by: {provider})")
         print("------------------------")
 
-        lead_id = str(uuid.uuid4())[:8]
-        save_pending_lead(lead_id, {
+        entry = {
+            "kind": "cold",
             "client": cfg["client"],
             "company_name": lead["company_name"],
             "target_email": lead["email"],
             "first_name": lead["first_name"],
+            "last_name": lead["last_name"],
+            "title": lead["title"],
             "drafted_subject": subject,
             "drafted_body": body,
-            "status": "pending",
-        })
-        send_approval_request_email(cfg, lead_id, lead, subject, body)
+        }
+        lead_id = review.save_pending(entry)
+        review.notify_operator(cfg, lead_id, entry)
         drafted += 1
 
     print(f"\n🎉 Done. Drafted {drafted} pitch(es) awaiting your web approval "

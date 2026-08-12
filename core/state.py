@@ -1,12 +1,16 @@
 """Idempotent state — SQLite (stdlib) at data/<client>/state.sqlite.
 
-Three tables:
+Tables:
   leads       — who we know about + their status (dedup key: client+email)
-  sends       — one row per dispatch; powers idempotency + daily-cap accounting
+  sends       — one row per dispatch; powers idempotency + daily-cap accounting;
+                stores each send's Message-ID so inbound replies can be matched back
   suppression — never-contact list (unsubscribes, bounces, manual)
+  replies     — one row per inbound reply we processed (dedup on Message-ID)
+  bookings    — meetings booked off an interested reply
 
 WAL mode is enabled so the agent and the Flask approval server can both touch
-the same DB safely.
+the same DB safely. connect() runs a tiny idempotent migration so DBs created
+before Tier 2 gain the new column/tables without losing data.
 """
 
 import sqlite3
@@ -39,6 +43,7 @@ CREATE TABLE IF NOT EXISTS sends (
     mailbox       TEXT NOT NULL,   -- the sending identity used
     subject       TEXT,
     redirected_to TEXT,            -- set when delivered to a controlled inbox instead of the prospect
+    message_id    TEXT,            -- RFC Message-ID header we stamped, so replies can be matched back
     sent_at       TEXT NOT NULL
 );
 
@@ -46,9 +51,32 @@ CREATE TABLE IF NOT EXISTS suppression (
     id         INTEGER PRIMARY KEY,
     client     TEXT NOT NULL,
     email      TEXT NOT NULL,
-    reason     TEXT NOT NULL,      -- unsubscribed | bounced | complained | manual
+    reason     TEXT NOT NULL,      -- unsubscribed | bounced | complained | manual | not_interested
     created_at TEXT NOT NULL,
     UNIQUE(client, email)
+);
+
+CREATE TABLE IF NOT EXISTS replies (
+    id          INTEGER PRIMARY KEY,
+    client      TEXT NOT NULL,
+    lead_email  TEXT NOT NULL,     -- the prospect who replied (logical, not the redirect inbox)
+    message_id  TEXT NOT NULL,     -- the inbound reply's Message-ID (dedup key)
+    in_reply_to TEXT,              -- the send Message-ID it responded to
+    subject     TEXT,
+    body        TEXT,
+    intent      TEXT,              -- interested | question | objection | not_interested | unsubscribe | auto_reply
+    created_at  TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'new',
+    UNIQUE(client, message_id)
+);
+
+CREATE TABLE IF NOT EXISTS bookings (
+    id         INTEGER PRIMARY KEY,
+    client     TEXT NOT NULL,
+    lead_email TEXT NOT NULL,
+    event_id   TEXT,
+    starts_at  TEXT,
+    created_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sends_client_mailbox_day ON sends(client, mailbox, sent_at);
@@ -70,8 +98,23 @@ def connect(db_path):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     conn.commit()
     return conn
+
+
+def _migrate(conn):
+    """Idempotent, additive migrations for DBs created before Tier 2.
+
+    CREATE TABLE IF NOT EXISTS covers new tables; only pre-existing tables need an
+    ALTER. Safe to run on every connect — each change is guarded by a column check.
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(sends)").fetchall()}
+    if "message_id" not in cols:
+        conn.execute("ALTER TABLE sends ADD COLUMN message_id TEXT")
+    # Index built here (not in _SCHEMA) so it never runs before the column exists.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sends_message_id ON sends(client, message_id)")
+    conn.commit()
 
 
 # --- leads -----------------------------------------------------------------
@@ -110,7 +153,7 @@ def already_contacted(conn, client, email):
 
 # --- sends -----------------------------------------------------------------
 
-def record_send(conn, client, lead_email, mailbox, subject, redirected_to=None):
+def record_send(conn, client, lead_email, mailbox, subject, redirected_to=None, message_id=None):
     """Record a dispatch and mark the lead 'sent'. Ensures a leads row exists."""
     if lead_status(conn, client, lead_email) is None:
         conn.execute(
@@ -119,8 +162,9 @@ def record_send(conn, client, lead_email, mailbox, subject, redirected_to=None):
             (client, lead_email, _now()),
         )
     conn.execute(
-        "INSERT INTO sends (client, lead_email, mailbox, subject, redirected_to, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (client, lead_email, mailbox, subject, redirected_to, _now()),
+        "INSERT INTO sends (client, lead_email, mailbox, subject, redirected_to, message_id, sent_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (client, lead_email, mailbox, subject, redirected_to, message_id, _now()),
     )
     conn.execute(
         "UPDATE leads SET status='sent' WHERE client=? AND email=?", (client, lead_email)
@@ -141,3 +185,58 @@ def sends_today(conn, client, mailbox=None):
             (client, _today()),
         ).fetchone()
     return row["c"]
+
+
+# --- replies & bookings (Tier 2) -------------------------------------------
+
+def lead_for_message_id(conn, client, message_ids):
+    """Given the In-Reply-To/References ids from an inbound reply, return the
+    lead_email of the send it responds to (most recent match), or None."""
+    ids = [m for m in (message_ids or []) if m]
+    if not ids:
+        return None
+    placeholders = ",".join("?" for _ in ids)
+    row = conn.execute(
+        f"SELECT lead_email FROM sends WHERE client=? AND message_id IN ({placeholders}) "
+        f"ORDER BY sent_at DESC LIMIT 1",
+        (client, *ids),
+    ).fetchone()
+    return row["lead_email"] if row else None
+
+
+def reply_seen(conn, client, message_id):
+    """True if we've already recorded this inbound reply (dedup on Message-ID)."""
+    if not message_id:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM replies WHERE client=? AND message_id=?", (client, message_id)
+    ).fetchone()
+    return row is not None
+
+
+def record_reply(conn, client, lead_email, message_id, in_reply_to, subject, body, intent):
+    """Record an inbound reply (idempotent on Message-ID). Bumps the lead status
+    to a reply state unless it's already been moved further along."""
+    conn.execute(
+        """INSERT INTO replies
+               (client, lead_email, message_id, in_reply_to, subject, body, intent, created_at, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new')
+           ON CONFLICT(client, message_id) DO NOTHING""",
+        (client, lead_email, message_id, in_reply_to, subject, body, intent, _now()),
+    )
+    if lead_email and lead_status(conn, client, lead_email) in CONTACTED_STATES:
+        conn.execute(
+            "UPDATE leads SET status='replied' WHERE client=? AND email=?", (client, lead_email)
+        )
+    conn.commit()
+
+
+def record_booking(conn, client, lead_email, event_id, starts_at):
+    conn.execute(
+        "INSERT INTO bookings (client, lead_email, event_id, starts_at, created_at) VALUES (?, ?, ?, ?, ?)",
+        (client, lead_email, event_id, starts_at, _now()),
+    )
+    conn.execute(
+        "UPDATE leads SET status='meeting_booked' WHERE client=? AND email=?", (client, lead_email)
+    )
+    conn.commit()

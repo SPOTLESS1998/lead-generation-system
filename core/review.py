@@ -1,0 +1,159 @@
+"""The pending-draft queue + operator notification — shared by both agents.
+
+A draft (a cold pitch, or a reply to a prospect) is written here as JSON, and the
+operator gets an email with 1-click APPROVE / DECLINE links that the Flask server
+handles. This one module replaces the copies that used to live in lead_agent.py and
+approval_server.py, and it renders both kinds of draft:
+
+    kind="cold"   — a first-touch pitch (Tier 1)
+    kind="reply"  — a threaded reply to a prospect's response (Tier 2), optionally
+                    carrying a proposed meeting to book on approval.
+
+The queue file (pending_leads.json) is a transient hand-off; it is git-ignored.
+"""
+
+import os
+import json
+import uuid
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+from . import config
+
+PENDING_FILE = os.path.join(config.ROOT, "pending_leads.json")
+
+
+# --- queue ------------------------------------------------------------------
+
+def load_pending():
+    if not os.path.exists(PENDING_FILE):
+        return {}
+    with open(PENDING_FILE, "r") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return {}
+
+
+def _write(leads):
+    with open(PENDING_FILE, "w") as f:
+        json.dump(leads, f, indent=4)
+
+
+def save_pending(entry):
+    """Store a draft (adds status='pending'); returns its short id."""
+    entry.setdefault("kind", "cold")
+    entry["status"] = "pending"
+    leads = load_pending()
+    lead_id = str(uuid.uuid4())[:8]
+    leads[lead_id] = entry
+    _write(leads)
+    return lead_id
+
+
+def set_pending_status(lead_id, status):
+    leads = load_pending()
+    if lead_id in leads:
+        leads[lead_id]["status"] = status
+        _write(leads)
+
+
+# --- operator notification --------------------------------------------------
+
+def _html_shell(inner):
+    return (f'<html><body style="font-family:Arial,sans-serif;line-height:1.6;color:#333;">'
+            f'{inner}</body></html>')
+
+
+def _buttons(dashboard, lead_id):
+    return (
+        f'<p style="margin-top:20px;">'
+        f'<a href="{dashboard}/approve/{lead_id}" style="background:#4CAF50;color:white;'
+        f'padding:14px 25px;text-decoration:none;border-radius:4px;font-weight:bold;'
+        f'margin-right:15px;">✅ APPROVE &amp; SEND</a>'
+        f'<a href="{dashboard}/decline/{lead_id}" style="background:#f44336;color:white;'
+        f'padding:14px 25px;text-decoration:none;border-radius:4px;font-weight:bold;">❌ DECLINE</a>'
+        f'</p>'
+        f'<p style="margin-top:30px;font-size:12px;color:#777;">Click these on the machine '
+        f'running the approval server ({dashboard}).</p>'
+    )
+
+
+def _cold_body(cfg, lead_id, entry, dashboard):
+    body_html = (entry.get("drafted_body") or "").replace(chr(10), "<br>")
+    name = f'{entry.get("first_name","")} {entry.get("last_name","")}'.strip()
+    return _html_shell(
+        f'<h2>{cfg["client_name"]} — Approval Request</h2>'
+        f'<p>Your AI system scouted a lead and drafted a personalized pitch.</p>'
+        f'<div style="background:#f9f9f9;padding:15px;border-left:4px solid #0056b3;margin-bottom:20px;">'
+        f'<strong>LEAD:</strong><br>'
+        f'Company: {entry.get("company_name","")}<br>'
+        f'Decision Maker: {name} ({entry.get("title","")})<br>'
+        f'Prospect Email: {entry.get("target_email","")}</div>'
+        f'<div style="background:#f1f8e9;padding:15px;border-left:4px solid #4CAF50;margin-bottom:20px;">'
+        f'<strong>PROPOSED PITCH:</strong><br>'
+        f'<strong>Subject:</strong> {entry.get("drafted_subject","")}<br><br>{body_html}</div>'
+        f'<p>Approve to send (goes to your controlled inbox in demo mode):</p>'
+        f'{_buttons(dashboard, lead_id)}'
+    )
+
+
+def _reply_body(cfg, lead_id, entry, dashboard):
+    reply_html = (entry.get("drafted_body") or "").replace(chr(10), "<br>")
+    incoming = (entry.get("incoming_snippet") or "").replace(chr(10), "<br>")
+    meeting = entry.get("meeting")
+    meeting_html = ""
+    if meeting:
+        meeting_html = (
+            f'<div style="background:#fff3e0;padding:15px;border-left:4px solid #ff9800;margin-bottom:20px;">'
+            f'<strong>📅 MEETING TO BOOK ON APPROVAL:</strong><br>'
+            f'{meeting.get("title","Intro call")} — {meeting.get("start_local","(time TBD)")} '
+            f'({meeting.get("duration_min",30)} min, {cfg.get("timezone","UTC")})</div>'
+        )
+    return _html_shell(
+        f'<h2>{cfg["client_name"]} — Reply Approval</h2>'
+        f'<p>A prospect replied. Intent detected: <strong>{entry.get("intent","?")}</strong>.</p>'
+        f'<div style="background:#f9f9f9;padding:15px;border-left:4px solid #0056b3;margin-bottom:20px;">'
+        f'<strong>FROM:</strong> {entry.get("target_email","")}<br>'
+        f'<strong>THEY WROTE:</strong><br>{incoming}</div>'
+        f'{meeting_html}'
+        f'<div style="background:#f1f8e9;padding:15px;border-left:4px solid #4CAF50;margin-bottom:20px;">'
+        f'<strong>DRAFTED REPLY:</strong><br>'
+        f'<strong>Subject:</strong> {entry.get("drafted_subject","")}<br><br>{reply_html}</div>'
+        f'<p>Approve to send this reply in-thread'
+        f'{" and create the calendar event" if meeting else ""} '
+        f'(goes to your controlled inbox in demo mode):</p>'
+        f'{_buttons(dashboard, lead_id)}'
+    )
+
+
+def notify_operator(cfg, lead_id, entry):
+    """Email the operator (their own inbox) the draft + approve/decline links."""
+    smtp_user = os.environ["SMTP_USER"]
+    smtp_pass = os.environ["SMTP_PASS"]
+    dashboard = (cfg.get("unsubscribe_base_url") or "http://localhost:5001").rstrip("/")
+    kind = entry.get("kind", "cold")
+    who = entry.get("company_name") or entry.get("target_email") or "prospect"
+    subject = (f"[ACTION REQUIRED] Review reply to {who}" if kind == "reply"
+               else f"[ACTION REQUIRED] Review pitch for {who}")
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["From"] = f"{cfg['client_name']} System <{smtp_user}>"
+        msg["To"] = smtp_user
+        msg["Subject"] = subject
+        html_content = (_reply_body(cfg, lead_id, entry, dashboard) if kind == "reply"
+                        else _cold_body(cfg, lead_id, entry, dashboard))
+        msg.attach(MIMEText("Please view this email in an HTML compatible client.", "plain"))
+        msg.attach(MIMEText(html_content, "html"))
+
+        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=30)
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.sendmail(smtp_user, smtp_user, msg.as_string())
+        server.quit()
+        print(f"✅ Approval request sent to your inbox ({who}).")
+        return True
+    except Exception as e:
+        print(f"❌ Error sending approval request: {e}")
+        return False

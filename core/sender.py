@@ -14,6 +14,7 @@ import html
 import time
 import random
 import smtplib
+from email.utils import make_msgid
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -76,12 +77,17 @@ class SendingPool:
     # --- send --------------------------------------------------------------
 
     def send(self, conn, to_email, subject, body_text,
-             footer_html="", footer_text="", throttle=True):
+             footer_html="", footer_text="", throttle=True,
+             in_reply_to=None, references=None):
         """Send one email through the pool. Returns a result dict.
 
         Raises SendCapExceeded (before any SMTP) if a cap is hit, or SendError
         if delivery fails. `throttle` should be False for interactive 1-click
         sends (a human clicking already paces them) and True for batch/cron.
+
+        `in_reply_to`/`references` (Message-IDs) thread an approved reply under the
+        prospect's message in Gmail. Every send is stamped with its own Message-ID,
+        which is stored so a future inbound reply can be matched back to it.
         """
         if state.sends_today(conn, self.client) >= self.global_cap:
             raise SendCapExceeded(f"daily global cap reached ({self.global_cap})")
@@ -106,6 +112,16 @@ class SendingPool:
             # Make it obvious in the demo that this was routed to a safe inbox.
             msg["X-Ejentic-Intended-For"] = to_email
 
+        # Stamp a Message-ID (so replies can be matched back) and thread if asked.
+        domain = mailbox["address"].split("@")[-1] if "@" in mailbox["address"] else None
+        message_id = make_msgid(domain=domain)
+        msg["Message-ID"] = message_id
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+            msg["References"] = references or in_reply_to
+        elif references:
+            msg["References"] = references
+
         html_body = (
             '<html><body style="font-family:Arial,sans-serif;line-height:1.6;color:#333;">'
             f"{_nl2br(body_text)}{footer_html}"
@@ -124,11 +140,13 @@ class SendingPool:
             raise SendError(str(e))
 
         delay = self._throttle() if throttle else 0.0
-        state.record_send(conn, self.client, to_email, mailbox["address"], subject, redirected_to)
+        state.record_send(conn, self.client, to_email, mailbox["address"], subject,
+                          redirected_to, message_id=message_id)
         return {
             "mailbox": mailbox["address"],
             "delivered_to": actual_to,
             "intended_for": to_email,
             "redirected": redirected_to is not None,
+            "message_id": message_id,
             "throttle_s": round(delay, 1),
         }
