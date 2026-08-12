@@ -39,6 +39,13 @@ DEFAULTS = {
     "gemini_model": "gemini-2.5-flash",
     "nvidia_model": "meta/llama-3.1-70b-instruct",
     "demo_mode": False,                      # False = real AI generation
+    "timezone": "UTC",                        # IANA tz for proposing/booking meetings
+    "booking": {                              # Tier 2: book a real meeting on an approved 'interested' reply
+        "enabled": True,                      # False = still reply, just don't create a calendar event
+        "provider": "composio_googlecalendar",
+        "default_duration_min": 30,
+        "action_slug": "GOOGLECALENDAR_CREATE_EVENT",
+    },
     "sending": {
         "mode": "controlled",                # "controlled" (redirect to safe inbox) | "live"
         "controlled_inbox_env": "SMTP_USER", # where sends go in controlled mode
@@ -74,6 +81,7 @@ def _resolve_mailbox(m, client):
 
     Config shape (creds are ALWAYS env references, never literals):
         {"smtp_host","smtp_port","user_env","pass_env","daily_cap",
+         "imap_host","imap_port" (optional; default imap.gmail.com:993 — Tier 2 reply reading),
          "address"|"address_env" (optional; defaults to the resolved user)}
     """
     user = _env(m.get("user_env"))
@@ -88,6 +96,8 @@ def _resolve_mailbox(m, client):
         "address": address,
         "smtp_host": m.get("smtp_host", "smtp.gmail.com"),
         "smtp_port": int(m.get("smtp_port", 587)),
+        "imap_host": m.get("imap_host", "imap.gmail.com"),   # reply reading reuses these creds
+        "imap_port": int(m.get("imap_port", 993)),
         "user": user,
         "password": password,            # in-memory only; never logged
         "daily_cap": int(m.get("daily_cap", 40)),

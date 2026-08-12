@@ -3,16 +3,14 @@ warnings.filterwarnings('ignore')
 
 import os
 import sys
-import json
 import logging
 
 from flask import Flask
 
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core import config, state, sender, suppression, compliance
-
-PENDING_LEADS_FILE = os.path.join(config.ROOT, "pending_leads.json")
+from core import config, state, sender, suppression, compliance, review
+from core import calendar as gcal   # core/calendar.py (the booking seam), not stdlib calendar
 
 app = Flask(__name__)
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
@@ -38,50 +36,92 @@ def page(title, body, emoji="✅"):
     <p style="color:#999;">You may now close this tab.</p></body></html>"""
 
 
-# --- pending-draft queue (transient hand-off from the agent) ---------------
-
-def get_pending_leads():
-    if not os.path.exists(PENDING_LEADS_FILE):
-        return {}
-    with open(PENDING_LEADS_FILE, "r") as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError:
-            return {}
-
-
-def update_lead_status(lead_id, status):
-    leads = get_pending_leads()
-    if lead_id in leads:
-        leads[lead_id]["status"] = status
-        with open(PENDING_LEADS_FILE, "w") as f:
-            json.dump(leads, f, indent=4)
-
-
 # --- routes ----------------------------------------------------------------
+# The pending-draft queue lives in core.review (shared by both agents).
 
 @app.route('/approve/<lead_id>')
 def approve(lead_id):
-    leads = get_pending_leads()
+    leads = review.load_pending()
     if lead_id not in leads or leads[lead_id].get("status") != "pending":
         return page("Link Expired or Invalid",
                     "This lead has already been processed or does not exist.", "⚠️"), 400
 
     data = leads[lead_id]
+    kind = data.get("kind", "cold")
     client = data.get("client", config.active_client())
     to_email = data["target_email"]
     cfg = get_cfg(client)
     conn = open_conn(cfg)
 
-    print(f"\n[!] WEB APPROVAL for {lead_id} ({data.get('company_name')}) — client={client}")
+    who = data.get("company_name") or to_email
+    print(f"\n[!] WEB APPROVAL for {lead_id} ({who}) — client={client}, kind={kind}")
     try:
         pool = sender.SendingPool(cfg)
         token = compliance.unsub_token(client, to_email, config.unsub_secret())
         unsub = compliance.unsub_url(cfg, token)
+        footer_html = compliance.footer(cfg, unsub, "html")
+        footer_text = compliance.footer(cfg, unsub, "text")
+
+        if kind == "reply":
+            # 1) Optionally book a real meeting FIRST. Graceful (RAG-reranker-404
+            #    pattern): a booking failure must never stop the reply from going out.
+            meeting = data.get("meeting") or {}
+            booked = None
+            if meeting.get("start_local") and cfg.get("booking", {}).get("enabled"):
+                # Attendee follows the sending mode: never invite a real stranger
+                # during a controlled demo — point the invite at the safe inbox.
+                attendee = (cfg["sending"]["controlled_inbox"]
+                            if cfg["sending"]["mode"] == "controlled" else to_email)
+                try:
+                    booked = gcal.create_event(
+                        cfg,
+                        summary=meeting.get("title") or f"Intro call — {cfg['client_name']}",
+                        start_local=meeting["start_local"],
+                        duration_min=int(meeting.get("duration_min") or 30),
+                        attendee_email=attendee,
+                        description=f"Auto-created from an interested reply by {to_email}.",
+                    )
+                except gcal.CalendarError as e:
+                    print(f"⚠️  Calendar booking failed ({e}); sending the reply without a booked event.")
+
+            # 2) When we actually booked, weave a confirmation line into the reply.
+            body = data["drafted_body"]
+            if booked:
+                tz = cfg.get("timezone", "UTC")
+                body += f"\n\nI've put a hold on the calendar for {meeting['start_local']} ({tz})."
+                if booked.get("html_link"):
+                    body += f"\nCalendar invite: {booked['html_link']}"
+
+            # 3) Send the threaded reply (In-Reply-To / References keep it in-thread).
+            result = pool.send(
+                conn, to_email, data["drafted_subject"], body,
+                footer_html=footer_html, footer_text=footer_text, throttle=False,
+                in_reply_to=data.get("in_reply_to"), references=data.get("references"),
+            )
+            if booked:
+                state.record_booking(conn, client, to_email,
+                                     booked.get("event_id"), booked.get("start_iso"))
+                state.set_status(conn, client, to_email, "meeting_booked")
+            review.set_pending_status(lead_id, "approved_and_sent")
+
+            dest = "your controlled inbox" if result["redirected"] else to_email
+            if meeting.get("start_local"):
+                note = (f" A Google Calendar event was created for <b>{meeting['start_local']}</b>."
+                        if booked else
+                        " ⚠️ Calendar booking did not complete — the reply was still sent; book "
+                        "the meeting manually (or run <code>composio link googlecalendar</code>).")
+            else:
+                note = ""
+            print(f"✅ Reply sent via {result['mailbox']} → {dest} "
+                  f"({'booked' if booked else 'no booking'}).")
+            return page("Reply Approved &amp; Sent!",
+                        f"Threaded reply delivered to <b>{dest}</b> (intended for "
+                        f"{result['intended_for']}), via {result['mailbox']}.{note}"), 200
+
+        # kind == "cold" (default) — unchanged Tier 1 behavior.
         result = pool.send(
             conn, to_email, data["drafted_subject"], data["drafted_body"],
-            footer_html=compliance.footer(cfg, unsub, "html"),
-            footer_text=compliance.footer(cfg, unsub, "text"),
+            footer_html=footer_html, footer_text=footer_text,
             throttle=False,  # a human clicking already paces sends; throttle is for batch/cron
         )
     except sender.SendCapExceeded as e:
@@ -93,21 +133,21 @@ def approve(lead_id):
     finally:
         conn.close()
 
-    update_lead_status(lead_id, "approved_and_sent")
+    review.set_pending_status(lead_id, "approved_and_sent")
     dest = "your controlled inbox" if result["redirected"] else to_email
     print(f"✅ Sent via {result['mailbox']} → {dest} (intended for {result['intended_for']}).")
-    return page("Pitch Approved & Sent!",
+    return page("Pitch Approved &amp; Sent!",
                 f"Delivered to <b>{dest}</b> (intended for {result['intended_for']}), "
                 f"sent via {result['mailbox']}. A CAN-SPAM footer with an unsubscribe link was included."), 200
 
 
 @app.route('/decline/<lead_id>')
 def decline(lead_id):
-    leads = get_pending_leads()
+    leads = review.load_pending()
     if lead_id in leads and leads[lead_id].get("status") == "pending":
-        update_lead_status(lead_id, "declined")
+        review.set_pending_status(lead_id, "declined")
         print(f"\n[!] WEB DECLINE for {lead_id}. Draft discarded.")
-    return page("Pitch Declined", "The draft has been discarded and will not be sent.", "❌"), 200
+    return page("Draft Declined", "The draft has been discarded and will not be sent.", "❌"), 200
 
 
 @app.route('/unsubscribe/<token>')

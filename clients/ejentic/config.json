@@ -8,6 +8,13 @@
   "gemini_model": "gemini-2.5-flash",
   "nvidia_model": "meta/llama-3.1-70b-instruct",
   "demo_mode": false,
+  "timezone": "Africa/Lagos",
+  "booking": {
+    "enabled": true,
+    "provider": "composio_googlecalendar",
+    "default_duration_min": 30,
+    "action_slug": "GOOGLECALENDAR_CREATE_EVENT"
+  },
   "sending": {
     "mode": "controlled",
     "controlled_inbox_env": "SMTP_USER",
