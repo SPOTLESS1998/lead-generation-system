@@ -1,0 +1,35 @@
+{
+  "local accounting firms lagos nigeria": [
+    {
+      "first_name": "Oluwatobi",
+      "last_name": "Adebayo",
+      "title": "Managing Partner",
+      "email": "o.adebayo@adebayotaxpartners.com.ng",
+      "company_name": "Adebayo & Co Tax Partners",
+      "company_description": "A premier accounting and tax advisory firm based in Victoria Island, Lagos. We handle high volumes of tax audits, payroll processing, and financial consulting for mid-sized enterprises across Nigeria.",
+      "website_url": "https://adebayotaxpartners.com.ng"
+    }
+  ],
+  "real estate agencies abuja": [
+    {
+      "first_name": "Amina",
+      "last_name": "Bello",
+      "title": "Chief Executive Officer",
+      "email": "amina@capitalhomesabuja.com",
+      "company_name": "Capital Homes Abuja",
+      "company_description": "Luxury real estate brokerage specializing in Maitama and Asokoro properties. We assist high-net-worth individuals and expatriates in finding premium residential and commercial real estate in the FCT. We manage thousands of client inquiries monthly.",
+      "website_url": "https://capitalhomesabuja.com"
+    }
+  ],
+  "e-commerce fashion stores nigeria": [
+    {
+      "first_name": "Chinedu",
+      "last_name": "Okafor",
+      "title": "Founder",
+      "email": "chinedu@lagosstylehub.ng",
+      "company_name": "Lagos Style Hub",
+      "company_description": "Fast-growing online fashion retailer delivering trendy, locally-made apparel across Nigeria. We manage thousands of daily customer orders, inquiries, and logistics through our proprietary e-commerce platform.",
+      "website_url": "https://lagosstylehub.ng"
+    }
+  ]
+}

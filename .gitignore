@@ -1,0 +1,20 @@
+# --- Secrets: NEVER commit ---
+.env
+.env.*
+!.env.template
+
+# --- Python ---
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# --- Runtime state (per-client, machine-local) ---
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+pending_leads.json
+
+# --- OS noise ---
+.DS_Store
