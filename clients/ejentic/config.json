@@ -8,6 +8,14 @@
   "gemini_model": "gemini-2.5-flash",
   "nvidia_model": "meta/llama-3.1-70b-instruct",
   "demo_mode": false,
+  "lead_source": "maps_firecrawl",
+  "discovery": {
+    "queries": ["accounting firms in Lagos, Nigeria"],
+    "max_results": 10,
+    "max_leads": 15,
+    "require_email": true,
+    "scrape_pages": ["", "contact", "about"]
+  },
   "timezone": "Africa/Lagos",
   "booking": {
     "enabled": true,

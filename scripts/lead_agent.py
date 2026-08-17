@@ -104,13 +104,29 @@ def main():
     print("=========================================================")
 
     conn = state.connect(cfg["paths"]["db"])
-    all_leads, skipped = leads_source.load_leads(cfg)
-    print_step(f"🔍 Loaded {len(all_leads)} curated lead(s) "
-               f"({skipped} template/placeholder row(s) ignored).")
+
+    # Lead source is config-selectable: a curated CSV, or live auto-discovery
+    # (Google Maps → Firecrawl → AI extraction). Both return (leads, skipped)
+    # with the same lead shape, so the rest of the pipeline is identical.
+    if cfg.get("lead_source") == "maps_firecrawl":
+        from core import discovery
+        print_step("🛰️  Auto-sourcing leads (Google Maps → Firecrawl → AI extraction)...")
+        all_leads, skipped = discovery.load_leads(cfg)
+        print_step(f"🔍 Sourced {len(all_leads)} lead(s) "
+                   f"({skipped} business(es) skipped: no site/email or scrape failed).")
+    else:
+        all_leads, skipped = leads_source.load_leads(cfg)
+        print_step(f"🔍 Loaded {len(all_leads)} curated lead(s) "
+                   f"({skipped} template/placeholder row(s) ignored).")
 
     if not all_leads:
-        print("\n⚠️  No usable leads in clients/{}/leads.csv. "
-              "Add real contacts (see clients/_template/leads.csv) and re-run.".format(cfg["client"]))
+        if cfg.get("lead_source") == "maps_firecrawl":
+            print("\n⚠️  Discovery found no usable leads. Check discovery.queries in "
+                  "clients/{}/config.json, and that Google Maps + Firecrawl are "
+                  "connected in Composio.".format(cfg["client"]))
+        else:
+            print("\n⚠️  No usable leads in clients/{}/leads.csv. "
+                  "Add real contacts (see clients/_template/leads.csv) and re-run.".format(cfg["client"]))
         return
 
     drafted = 0

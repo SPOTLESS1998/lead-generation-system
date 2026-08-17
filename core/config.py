@@ -39,6 +39,16 @@ DEFAULTS = {
     "gemini_model": "gemini-2.5-flash",
     "nvidia_model": "meta/llama-3.1-70b-instruct",
     "demo_mode": False,                      # False = real AI generation
+    "lead_source": "csv",                    # "csv" (curated file) | "maps_firecrawl" (auto-discovery)
+    "discovery": {                           # used only when lead_source == "maps_firecrawl"
+        "queries": [],                       # explicit Maps text queries; falls back to target_niches
+        "max_results": 10,                   # businesses per query (Maps allows 1-20)
+        "max_leads": 25,                     # overall cap on leads returned per run
+        "require_email": True,               # skip businesses with no discoverable public email
+        "scrape_pages": ["", "contact"],     # paths to try (homepage first; stops once an email is found)
+        "maps_search_slug": "GOOGLE_MAPS_TEXT_SEARCH",
+        "firecrawl_scrape_slug": "FIRECRAWL_SCRAPE",
+    },
     "timezone": "UTC",                        # IANA tz for proposing/booking meetings
     "booking": {                              # Tier 2: book a real meeting on an approved 'interested' reply
         "enabled": True,                      # False = still reply, just don't create a calendar event
