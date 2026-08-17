@@ -187,6 +187,31 @@ def test_config_defaults():
           "firecrawl_scrape_slug" in config.DEFAULTS["discovery"])
 
 
+def test_stored_in_file():
+    print("\n[composio: large outputs offloaded to a file are read back from disk]")
+    import tempfile
+    # The envelope Composio writes to disk when a scrape is too big to inline.
+    f = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+    json.dump({"successful": True,
+               "data": {"data": {"markdown": "Email us at team@stored.ng"}},
+               "error": None}, f)
+    f.close()
+
+    def stored_run(cmd, capture_output=True, text=True, timeout=None):
+        # Inline response carries NO data — just a pointer to the offload file.
+        return FakeProc(0, json.dumps({"successful": True, "storedInFile": True,
+                                       "outputFilePath": f.name, "tokenCount": 13800}))
+
+    orig = discovery.subprocess.run
+    discovery.subprocess.run = stored_run
+    try:
+        md = discovery._firecrawl_markdown("https://stored.ng/", "FIRECRAWL_SCRAPE")
+        check("markdown recovered from offloaded file", md == "Email us at team@stored.ng")
+    finally:
+        discovery.subprocess.run = orig
+        os.unlink(f.name)
+
+
 def main():
     # Patch the two external seams.
     discovery.subprocess.run = fake_run
@@ -197,6 +222,7 @@ def main():
     test_require_email_false()
     test_max_leads_cap()
     test_graceful_maps_failure()
+    test_stored_in_file()
     test_config_defaults()
 
     print(f"\n{'='*50}\nRESULT: {PASS} passed, {FAIL} failed\n{'='*50}")

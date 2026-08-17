@@ -108,6 +108,20 @@ def _composio_execute(slug, payload, timeout=90):
     if ok is False or obj.get("error"):
         print(f"   ⚠️  composio {slug} reported failure: {str(obj.get('error'))[:200]}")
         return None
+
+    # Composio offloads large tool outputs (most real web scrapes) to a file
+    # instead of inlining them: {"storedInFile": true, "outputFilePath": "..."}.
+    # The file holds the full envelope (same shape), so read it back in.
+    if obj.get("storedInFile") and obj.get("outputFilePath"):
+        try:
+            with open(obj["outputFilePath"], encoding="utf-8") as fh:
+                file_obj = json.load(fh)
+            if isinstance(file_obj, dict):
+                obj = file_obj
+        except Exception as e:
+            print(f"   ⚠️  composio {slug}: could not read stored output file "
+                  f"({obj['outputFilePath']}): {e}")
+            return None
     return obj
 
 
