@@ -10,9 +10,22 @@
   "demo_mode": false,
   "lead_source": "maps_firecrawl",
   "discovery": {
-    "queries": ["accounting firms in Lagos, Nigeria"],
-    "max_results": 10,
-    "max_leads": 15,
+    "queries": [
+      "accounting firms in Lagos, Nigeria",
+      "chartered accountants in Lagos, Nigeria",
+      "audit firms in Lagos, Nigeria",
+      "tax consultants in Lagos, Nigeria",
+      "bookkeeping services in Lagos, Nigeria",
+      "accounting firms in Victoria Island, Lagos",
+      "accounting firms in Ikeja, Lagos",
+      "accounting firms in Lekki, Lagos",
+      "accounting firms in Ikoyi, Lagos",
+      "audit and assurance firms in Lagos, Nigeria",
+      "payroll and tax services in Lagos, Nigeria",
+      "accounting and advisory firms in Lagos, Nigeria"
+    ],
+    "max_results": 20,
+    "max_leads": 50,
     "require_email": true,
     "scrape_pages": ["", "contact", "about"]
   },
