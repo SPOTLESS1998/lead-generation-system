@@ -32,6 +32,7 @@ placeholder rows.
 
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 
 from core.leads import FIELDS, _looks_like_email
@@ -47,6 +48,12 @@ MAPS_FIELD_MASK = ("places.id,places.displayName,places.formattedAddress,"
 
 # Markdown handed to the extractor is truncated to bound token cost.
 MAX_MARKDOWN_CHARS = 6000
+
+# How many businesses/queries to process concurrently. Each Composio CLI call has
+# a ~23s cold-start, so running several at once is the difference between a ~2h
+# run and a ~20min one. subprocess.run releases the GIL while the child runs, so
+# threads give real parallelism here. Overridable via discovery.max_workers.
+DEFAULT_MAX_WORKERS = 6
 
 
 class DiscoveryError(Exception):
@@ -281,8 +288,28 @@ def _queries(cfg):
     return [q for q in (cfg.get("target_niches") or []) if str(q).strip()]
 
 
+def _process_business(client_cfg, business, fc_slug, scrape_pages):
+    """Scrape one business (homepage-first, early-stop on email) and extract a lead.
+
+    Self-contained so it can run in a worker thread: it touches only its own
+    `business` dict and module-level pure helpers. Returns (business, lead|None).
+    """
+    lead = None
+    for url in _candidate_urls(business["website_url"], scrape_pages):
+        page_md = _firecrawl_markdown(url, fc_slug)
+        if page_md:
+            lead = _extract_lead(client_cfg, business, page_md)
+            if lead and _looks_like_email(lead["email"]):
+                break  # got a usable email — stop spending scrapes on this site
+    return business, lead
+
+
 def load_leads(client_cfg):
-    """Discover leads via Maps -> Firecrawl -> AI. Returns (leads, skipped).
+    """Discover leads via Maps -> Firecrawl -> AI, in parallel. Returns (leads, skipped).
+
+    Two concurrent phases (see DEFAULT_MAX_WORKERS): all Maps queries run at once,
+    then every unique business is scraped+extracted at once. Each business's own
+    pages are still tried sequentially so early-stop keeps saving scrapes.
 
     `skipped` counts businesses that were found but could not be turned into a
     usable lead (no website, scrape failed, or — when require_email is set — no
@@ -295,6 +322,7 @@ def load_leads(client_cfg):
     max_leads = int(disc.get("max_leads", 25))
     require_email = disc.get("require_email", True)
     scrape_pages = disc.get("scrape_pages", ["", "contact"])
+    workers = max(1, int(disc.get("max_workers", DEFAULT_MAX_WORKERS)))
 
     queries = _queries(client_cfg)
     if not queries:
@@ -303,33 +331,44 @@ def load_leads(client_cfg):
             "Set discovery.queries (or target_niches) in your client config."
         )
 
+    # --- Phase 1: run every Maps query concurrently, then de-dupe by domain. ---
+    print(f"   \U0001f5fa️  Running {len(queries)} Maps search(es) "
+          f"({workers} at a time)...")
+    businesses = []
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(_maps_search, q, max_results, maps_slug): q for q in queries}
+        for fut in as_completed(futs):
+            q = futs[fut]
+            try:
+                found = fut.result()
+            except Exception as e:
+                print(f"      ⚠️  Maps query {q!r} failed: {e}")
+                found = []
+            print(f"      • {q!r} → {len(found)} business(es) with a website.")
+            businesses.extend(found)
+
+    seen_domains, unique = set(), []
+    for biz in businesses:
+        dkey = _domain_key(biz["website_url"])
+        if dkey in seen_domains:
+            continue  # same site surfaced by more than one query
+        seen_domains.add(dkey)
+        unique.append(biz)
+    print(f"   🔎 {len(unique)} unique business(es) to enrich "
+          f"(from {len(businesses)} total hits).")
+
+    # --- Phase 2: scrape + extract every unique business concurrently. ---
     leads, skipped = [], 0
-    seen_domains = set()
-
-    for query in queries:
-        if len(leads) >= max_leads:
-            break
-        print(f"   \U0001f5fa️  Maps search: {query!r}")
-        businesses = _maps_search(query, max_results, maps_slug)
-        print(f"      → {len(businesses)} business(es) with a website.")
-
-        for biz in businesses:
-            if len(leads) >= max_leads:
-                break
-            dkey = _domain_key(biz["website_url"])
-            if dkey in seen_domains:
-                continue  # same site surfaced by another query
-            seen_domains.add(dkey)
-
-            # Scrape homepage first; only fetch extra pages if no email yet (cost control).
-            markdown, lead = "", None
-            for url in _candidate_urls(biz["website_url"], scrape_pages):
-                page_md = _firecrawl_markdown(url, fc_slug)
-                if page_md:
-                    markdown = page_md
-                    lead = _extract_lead(client_cfg, biz, markdown)
-                    if lead and _looks_like_email(lead["email"]):
-                        break  # got a usable email — stop spending scrapes on this site
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(_process_business, client_cfg, biz, fc_slug, scrape_pages): biz
+                for biz in unique}
+        for fut in as_completed(futs):
+            biz = futs[fut]
+            try:
+                _, lead = fut.result()
+            except Exception as e:
+                print(f"      ⚠️  {biz['company_name']}: enrichment error: {e}")
+                lead = None
 
             if not lead:
                 skipped += 1
@@ -341,5 +380,9 @@ def load_leads(client_cfg):
 
             leads.append(lead)
             print(f"      ✅ {biz['company_name']} — {lead['email'] or '(no email)'}")
+            if len(leads) >= max_leads:
+                for f in futs:      # hit the cap — cancel work not yet started
+                    f.cancel()
+                break
 
     return leads, skipped

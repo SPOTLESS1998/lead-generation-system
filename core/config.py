@@ -46,6 +46,7 @@ DEFAULTS = {
         "max_leads": 25,                     # overall cap on leads returned per run
         "require_email": True,               # skip businesses with no discoverable public email
         "scrape_pages": ["", "contact"],     # paths to try (homepage first; stops once an email is found)
+        "max_workers": 6,                    # businesses/queries scraped concurrently (Composio calls are slow)
         "maps_search_slug": "GOOGLE_MAPS_TEXT_SEARCH",
         "firecrawl_scrape_slug": "FIRECRAWL_SCRAPE",
     },
