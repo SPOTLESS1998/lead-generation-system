@@ -31,7 +31,9 @@ placeholder rows.
 """
 
 import json
+import re
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 
@@ -85,51 +87,92 @@ def _loads_tolerant(text):
     return None
 
 
-def _composio_execute(slug, payload, timeout=90):
+# Transient throttling we should wait out and retry. A daily "quota exceeded"
+# won't recover mid-run, so it is deliberately NOT in this list (retrying wastes
+# time); only per-minute style limits are.
+_RATE_LIMIT_HINTS = ("rate limit", "rate-limit", "429", "too many requests",
+                     "retry after", "remaining (req/min)")
+
+
+def _is_rate_limited(text):
+    t = (text or "").lower()
+    return any(h in t for h in _RATE_LIMIT_HINTS)
+
+
+def _retry_after_seconds(text, default):
+    """Honor an explicit 'retry after Ns' if present (capped), else use default."""
+    m = re.search(r"retry after (\d+)", (text or "").lower())
+    return min(int(m.group(1)), 60) if m else default
+
+
+def _composio_execute(slug, payload, timeout=90, retries=3):
     """Run `composio execute <slug> -d <json>` and return the parsed response dict.
 
-    Raises DiscoveryError only for a missing CLI (a setup problem). Every other
-    failure returns None so the caller can skip this item and continue.
+    On a transient rate limit (per-minute throttling, HTTP 429, "retry after Ns")
+    it waits and retries with backoff — the free Firecrawl/Maps tiers throttle
+    aggressively, and retrying is the difference between recovering a business and
+    silently skipping it. Raises DiscoveryError only for a missing CLI (a setup
+    problem). Every other failure returns None so the caller can skip and continue.
     """
     cmd = ["composio", "execute", slug, "-d", json.dumps(payload)]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except FileNotFoundError:
-        raise DiscoveryError(
-            "composio CLI not found on PATH. Install it and connect Google Maps + "
-            "Firecrawl, or set lead_source back to 'csv'."
-        )
-    except subprocess.TimeoutExpired:
-        print(f"   ⚠️  composio {slug} timed out; skipping.")
-        return None
-    if proc.returncode != 0:
-        print(f"   ⚠️  composio {slug} rc={proc.returncode}: "
-              f"{(proc.stderr or proc.stdout or '').strip()[:200]}")
-        return None
-
-    obj = _loads_tolerant((proc.stdout or "").strip())
-    if not isinstance(obj, dict):
-        print(f"   ⚠️  composio {slug} returned unparseable output; skipping.")
-        return None
-    ok = obj.get("successful", obj.get("successfull", True))
-    if ok is False or obj.get("error"):
-        print(f"   ⚠️  composio {slug} reported failure: {str(obj.get('error'))[:200]}")
-        return None
-
-    # Composio offloads large tool outputs (most real web scrapes) to a file
-    # instead of inlining them: {"storedInFile": true, "outputFilePath": "..."}.
-    # The file holds the full envelope (same shape), so read it back in.
-    if obj.get("storedInFile") and obj.get("outputFilePath"):
+    backoff = 5
+    for attempt in range(retries + 1):
         try:
-            with open(obj["outputFilePath"], encoding="utf-8") as fh:
-                file_obj = json.load(fh)
-            if isinstance(file_obj, dict):
-                obj = file_obj
-        except Exception as e:
-            print(f"   ⚠️  composio {slug}: could not read stored output file "
-                  f"({obj['outputFilePath']}): {e}")
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except FileNotFoundError:
+            raise DiscoveryError(
+                "composio CLI not found on PATH. Install it and connect Google Maps + "
+                "Firecrawl, or set lead_source back to 'csv'."
+            )
+        except subprocess.TimeoutExpired:
+            print(f"   ⚠️  composio {slug} timed out; skipping.")
             return None
-    return obj
+
+        combined = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+
+        if proc.returncode != 0:
+            if _is_rate_limited(combined) and attempt < retries:
+                wait = _retry_after_seconds(combined, backoff)
+                print(f"   ⏳ composio {slug} rate-limited; retry in {wait}s "
+                      f"(attempt {attempt + 1}/{retries})...")
+                time.sleep(wait)
+                backoff = min(backoff * 2, 60)
+                continue
+            print(f"   ⚠️  composio {slug} rc={proc.returncode}: {combined[:200]}")
+            return None
+
+        obj = _loads_tolerant((proc.stdout or "").strip())
+        if not isinstance(obj, dict):
+            print(f"   ⚠️  composio {slug} returned unparseable output; skipping.")
+            return None
+        ok = obj.get("successful", obj.get("successfull", True))
+        if ok is False or obj.get("error"):
+            err = str(obj.get("error"))
+            if _is_rate_limited(err) and attempt < retries:
+                wait = _retry_after_seconds(err, backoff)
+                print(f"   ⏳ composio {slug} rate-limited; retry in {wait}s "
+                      f"(attempt {attempt + 1}/{retries})...")
+                time.sleep(wait)
+                backoff = min(backoff * 2, 60)
+                continue
+            print(f"   ⚠️  composio {slug} reported failure: {err[:200]}")
+            return None
+
+        # Composio offloads large tool outputs (most real web scrapes) to a file
+        # instead of inlining them: {"storedInFile": true, "outputFilePath": "..."}.
+        # The file holds the full envelope (same shape), so read it back in.
+        if obj.get("storedInFile") and obj.get("outputFilePath"):
+            try:
+                with open(obj["outputFilePath"], encoding="utf-8") as fh:
+                    file_obj = json.load(fh)
+                if isinstance(file_obj, dict):
+                    obj = file_obj
+            except Exception as e:
+                print(f"   ⚠️  composio {slug}: could not read stored output file "
+                      f"({obj['outputFilePath']}): {e}")
+                return None
+        return obj
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -143,8 +186,20 @@ def _place_name(display):
     return (display or "").strip() if isinstance(display, str) else ""
 
 
-def _maps_search(query, max_results, slug):
-    """Return a list of business dicts for one text query (already website-filtered)."""
+def _maps_search(spec, max_results, slug):
+    """Return a list of business dicts for one query spec (already website-filtered).
+
+    `spec` is a dict {query, segment, service} (a bare string is also accepted for
+    backward-compat). Each returned business is tagged with the segment's Ejentic
+    service so the tag flows all the way to the drafted pitch.
+    """
+    if isinstance(spec, dict):
+        query = spec.get("query", "")
+        segment = spec.get("segment", "")
+        service = spec.get("service", "")
+    else:
+        query, segment, service = spec, "", ""
+
     payload = {
         "textQuery": query,
         "fieldMask": MAPS_FIELD_MASK,
@@ -173,6 +228,8 @@ def _maps_search(query, max_results, slug):
             "website_url": website,
             "address": (p.get("formattedAddress") or "").strip(),
             "phone": (p.get("nationalPhoneNumber") or "").strip(),
+            "segment": segment,
+            "ejentic_service": service,
         })
     return out
 
@@ -265,6 +322,7 @@ def _extract_lead(cfg, business, markdown):
         "company_name": business["company_name"],
         "company_description": (obj.get("company_description") or "").strip(),
         "website_url": business["website_url"],
+        "ejentic_service": business.get("ejentic_service", ""),  # ICP tag -> pitch
     }
     return {k: lead.get(k, "") for k in FIELDS}
 
@@ -286,6 +344,29 @@ def _queries(cfg):
     if queries:
         return queries
     return [q for q in (cfg.get("target_niches") or []) if str(q).strip()]
+
+
+def _query_specs(cfg):
+    """Query plan as [{query, segment, service}], newest targeting model first.
+
+    Priority: discovery.segments (each carries the Ejentic `service` its prospects
+    need) -> flat discovery.queries -> target_niches. The service tag rides along on
+    every business and lead so the strategist can pitch the matched offering. Flat
+    queries and niches produce specs with empty segment/service (untagged).
+    """
+    disc = cfg.get("discovery") or {}
+    specs = []
+    for seg in (disc.get("segments") or []):
+        if not isinstance(seg, dict):
+            continue
+        name = str(seg.get("name") or "").strip()
+        service = str(seg.get("service") or seg.get("name") or "").strip()
+        for q in (seg.get("queries") or []):
+            if str(q).strip():
+                specs.append({"query": str(q).strip(), "segment": name, "service": service})
+    if specs:
+        return specs
+    return [{"query": q, "segment": "", "service": ""} for q in _queries(cfg)]
 
 
 def _process_business(client_cfg, business, fc_slug, scrape_pages):
@@ -324,21 +405,22 @@ def load_leads(client_cfg):
     scrape_pages = disc.get("scrape_pages", ["", "contact"])
     workers = max(1, int(disc.get("max_workers", DEFAULT_MAX_WORKERS)))
 
-    queries = _queries(client_cfg)
-    if not queries:
+    specs = _query_specs(client_cfg)
+    if not specs:
         raise DiscoveryError(
             "lead_source is 'maps_firecrawl' but no search queries are configured. "
-            "Set discovery.queries (or target_niches) in your client config."
+            "Set discovery.segments or discovery.queries (or target_niches) in your "
+            "client config."
         )
 
     # --- Phase 1: run every Maps query concurrently, then de-dupe by domain. ---
-    print(f"   \U0001f5fa️  Running {len(queries)} Maps search(es) "
+    print(f"   \U0001f5fa️  Running {len(specs)} Maps search(es) "
           f"({workers} at a time)...")
     businesses = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(_maps_search, q, max_results, maps_slug): q for q in queries}
+        futs = {ex.submit(_maps_search, spec, max_results, maps_slug): spec for spec in specs}
         for fut in as_completed(futs):
-            q = futs[fut]
+            q = futs[fut]["query"]
             try:
                 found = fut.result()
             except Exception as e:

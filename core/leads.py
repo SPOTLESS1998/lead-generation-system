@@ -10,7 +10,9 @@ import os
 import csv
 
 FIELDS = ["first_name", "last_name", "title", "email",
-          "company_name", "company_description", "website_url"]
+          "company_name", "company_description", "website_url",
+          "ejentic_service"]   # which Ejentic offering this prospect was matched to
+                               # (auto-discovery sets it; CSV rows may leave it blank)
 
 
 def _looks_like_email(value):

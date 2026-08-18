@@ -1,9 +1,12 @@
 """Text + structured generation with an automatic provider fallback.
 
-The one place that talks to an LLM. Gemini is the mandated primary; NVIDIA is the
-automatic fallback (same pattern the RAG system uses — try the mandated engine,
-degrade gracefully rather than crash). Lifted out of scripts/lead_agent.py so the
-cold-email drafter AND the reply agent share exactly one code path.
+The one place that talks to an LLM. The default chain is FreeLLMAPI first (a local
+OpenAI-compatible gateway that itself fans out across ~11 free providers and fails
+over on rate limits), then raw Gemini, then raw NVIDIA as a last resort if the
+gateway is down. Order is configurable via cfg["providers"]. Same house pattern as
+the RAG system — try the preferred engine, degrade gracefully rather than crash.
+Lifted out of scripts/lead_agent.py so the cold-email drafter AND the reply agent
+share exactly one code path.
 
     from core.ai import generate, generate_json
     text, provider = generate(cfg, "write a haiku")
@@ -14,6 +17,42 @@ import os
 import json
 
 import requests
+
+
+def _freellmapi_chat(cfg, prompt, temperature=0.4, max_tokens=800):
+    """Call the local FreeLLMAPI gateway (OpenAI-compatible /v1/chat/completions).
+
+    FreeLLMAPI aggregates many free provider tiers behind one endpoint and does its
+    own provider failover, so this single call already survives most rate limits.
+    Base URL + unified key come from the environment; if the key isn't set we raise
+    so generate() cleanly skips to the next provider.
+    """
+    api_key = os.environ.get("FREELLMAPI_KEY")
+    if not api_key:
+        raise RuntimeError("FREELLMAPI_KEY not set")
+    base = os.environ.get("FREELLMAPI_BASE_URL", "http://localhost:3001/v1").rstrip("/")
+    body = {
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    # A specific model can be pinned via config; "" / "auto" means let the gateway
+    # auto-route (this build rejects a literal "auto", so we simply omit the field).
+    model = (cfg.get("freellmapi_model") or "").strip()
+    if model and model.lower() != "auto":
+        body["model"] = model
+    resp = requests.post(
+        f"{base}/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=body,
+        timeout=60,   # the gateway may try several upstreams before one answers
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"FreeLLMAPI {resp.status_code}: {resp.text[:200]}")
+    content = (resp.json()["choices"][0]["message"].get("content") or "").strip()
+    if not content:
+        raise RuntimeError("FreeLLMAPI returned empty content")
+    return content
 
 
 def _gemini_chat(cfg, prompt):
@@ -49,20 +88,47 @@ def _nvidia_chat(cfg, prompt, temperature=0.4, max_tokens=400):
     return resp.json()["choices"][0]["message"]["content"].strip()
 
 
-def generate(cfg, prompt):
-    """Generate text using the configured provider, falling back to the other.
+# Every provider is callable as fn(cfg, prompt); each raises if its creds are
+# missing, so generate() just moves on to the next one.
+_PROVIDER_FUNCS = {
+    "freellmapi": _freellmapi_chat,
+    "gemini": _gemini_chat,
+    "nvidia": _nvidia_chat,
+}
+DEFAULT_PROVIDERS = ["freellmapi", "gemini", "nvidia"]
 
-    Returns (text, provider_used). Tries the mandated engine first, then degrades.
+
+def _provider_order(cfg):
+    """The ordered list of providers to try, from config (deduped, known-only)."""
+    configured = cfg.get("providers")
+    if isinstance(configured, list) and configured:
+        seq = [p for p in configured if p in _PROVIDER_FUNCS]
+    else:
+        # Legacy fallback: honor copy_provider, but still try the gateway first.
+        primary = cfg.get("copy_provider", "gemini")
+        seq = ["freellmapi", primary, "gemini", "nvidia"]
+    seen, order = set(), []
+    for p in seq:
+        if p in _PROVIDER_FUNCS and p not in seen:
+            seen.add(p)
+            order.append(p)
+    return order or DEFAULT_PROVIDERS
+
+
+def generate(cfg, prompt):
+    """Generate text, trying each configured provider in order until one succeeds.
+
+    Returns (text, provider_used). Providers whose credentials are unset raise and
+    are skipped, so the chain degrades gracefully instead of crashing.
     """
-    order = ["gemini", "nvidia"] if cfg.get("copy_provider") == "gemini" else ["nvidia", "gemini"]
     last_err = None
-    for provider in order:
+    for provider in _provider_order(cfg):
         try:
-            text = _gemini_chat(cfg, prompt) if provider == "gemini" else _nvidia_chat(cfg, prompt)
+            text = _PROVIDER_FUNCS[provider](cfg, prompt)
             return text, provider
         except Exception as e:
             last_err = e
-            print(f"⚠️  {provider} generation failed ({e}); trying fallback...")
+            print(f"⚠️  {provider} generation failed ({e}); trying next provider...")
     raise RuntimeError(f"All providers failed. Last error: {last_err}")
 
 

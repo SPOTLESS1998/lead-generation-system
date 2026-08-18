@@ -35,18 +35,23 @@ DEFAULTS = {
     "reply_to": None,
     "physical_address": "",
     "unsubscribe_base_url": "http://localhost:5001",
-    "copy_provider": "gemini",              # "gemini" | "nvidia"
+    "copy_provider": "gemini",              # legacy hint; superseded by "providers"
+    "providers": ["freellmapi", "gemini", "nvidia"],  # LLM fallback order (see core/ai.py)
+    "freellmapi_model": "",                  # "" / "auto" = let the gateway auto-route
     "gemini_model": "gemini-2.5-flash",
     "nvidia_model": "meta/llama-3.1-70b-instruct",
     "demo_mode": False,                      # False = real AI generation
     "lead_source": "csv",                    # "csv" (curated file) | "maps_firecrawl" (auto-discovery)
     "discovery": {                           # used only when lead_source == "maps_firecrawl"
-        "queries": [],                       # explicit Maps text queries; falls back to target_niches
+        "queries": [],                       # flat Maps queries (fallback if no segments)
+        "segments": [],                      # ICP segments: [{name, service, queries:[...]}, ...]
+                                             #   each lead is tagged with the segment's `service`
+                                             #   so the strategist pitches the right offering
         "max_results": 10,                   # businesses per query (Maps allows 1-20)
         "max_leads": 25,                     # overall cap on leads returned per run
         "require_email": True,               # skip businesses with no discoverable public email
         "scrape_pages": ["", "contact"],     # paths to try (homepage first; stops once an email is found)
-        "max_workers": 6,                    # businesses/queries scraped concurrently (Composio calls are slow)
+        "max_workers": 3,                    # concurrent Composio calls (higher => more rate-limit hits)
         "maps_search_slug": "GOOGLE_MAPS_TEXT_SEARCH",
         "firecrawl_scrape_slug": "FIRECRAWL_SCRAPE",
     },

@@ -26,10 +26,21 @@ def print_step(step):
 
 def generate_strategy(cfg, lead):
     print_step(f"🧠 [Strategist] Analyzing {lead['company_name']}...")
+
+    # Auto-discovery tags each prospect with the ONE Ejentic offering their profile
+    # matched (their ICP segment). When present, steer the whole brief toward that
+    # service so the bottleneck + Free Gift pitch the exact thing they need.
+    service = (lead.get("ejentic_service") or "").strip()
+    service_line = (
+        f"\n    This prospect was matched to Ejentic's \"{service}\" offering — anchor the "
+        f"bottleneck and the Free Gift around that specific service.\n"
+        if service else ""
+    )
+
     prompt = f"""
     You are the Lead Strategist for '{cfg['client_name']}'.
     {cfg['client_name']} specializes in Localized Multilingual Support Agents, Enterprise Workflow Automation, and Air-Gapped Internal Knowledge Bases.
-
+{service_line}
     Analyze this prospect:
     Name: {lead['first_name']} {lead['last_name']}
     Title: {lead['title']}
@@ -141,7 +152,9 @@ def main():
             continue
 
         # Record intent BEFORE drafting so a re-run won't re-contact this lead.
-        state.upsert_lead(conn, cfg["client"], lead, status="queued")
+        # The ICP tag (which Ejentic offering they matched) is stored as the niche.
+        state.upsert_lead(conn, cfg["client"], lead,
+                          niche=lead.get("ejentic_service") or None, status="queued")
 
         if cfg["demo_mode"]:
             print_step(f"🧠 [demo] Strategist analyzing {lead['company_name']}...")

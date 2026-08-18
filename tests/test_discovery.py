@@ -185,6 +185,7 @@ def test_config_defaults():
     check("discovery has maps + firecrawl slugs",
           "maps_search_slug" in config.DEFAULTS["discovery"] and
           "firecrawl_scrape_slug" in config.DEFAULTS["discovery"])
+    check("discovery has segments list", isinstance(config.DEFAULTS["discovery"].get("segments"), list))
 
 
 def test_stored_in_file():
@@ -212,6 +213,61 @@ def test_stored_in_file():
         os.unlink(f.name)
 
 
+def test_query_specs():
+    print("\n[query specs: segments -> tagged specs, else flat/niches]")
+    # Segments expand to one spec per query, each carrying its Ejentic service tag.
+    cfg = {"discovery": {"segments": [
+        {"name": "Support", "service": "Multilingual Support", "queries": ["a", "b"]},
+        {"name": "Auto", "queries": ["c"]},        # no explicit service -> falls back to name
+    ]}}
+    specs = discovery._query_specs(cfg)
+    check("segments expand to one spec per query", len(specs) == 3)
+    check("spec carries its service tag",
+          specs[0] == {"query": "a", "segment": "Support", "service": "Multilingual Support"})
+    check("service falls back to segment name", specs[2]["service"] == "Auto")
+    # No segments -> fall back to flat discovery.queries, untagged.
+    flat = discovery._query_specs({"discovery": {"queries": ["x"]}, "target_niches": ["y"]})
+    check("no segments -> flat queries untagged",
+          flat == [{"query": "x", "segment": "", "service": ""}])
+    # No segments, no queries -> target_niches, untagged.
+    niches = discovery._query_specs({"discovery": {}, "target_niches": ["z"]})
+    check("falls back to target_niches",
+          niches == [{"query": "z", "segment": "", "service": ""}])
+
+
+def test_segments():
+    print("\n[pipeline: segments drive discovery + tag each lead with its service]")
+    SCRAPE_CALLS.clear()
+    seg_cfg = {"copy_provider": "gemini", "gemini_model": "x", "nvidia_model": "y",
+               "discovery": {"segments": [
+                   {"name": "Support", "service": "Multilingual Support", "queries": ["Q1"]},
+                   {"name": "Automation", "service": "Workflow Automation", "queries": ["Q2"]},
+               ], "max_results": 10, "max_leads": 25, "require_email": True,
+                   "scrape_pages": ["", "contact", "about"]}}
+    leads, skipped = discovery.load_leads(seg_cfg)
+    by_company = {l["company_name"]: l for l in leads}
+    check("2 usable leads via segments", len(leads) == 2)
+    # Alpha only appears under Q1 -> deterministically the "Support" segment's service.
+    check("Alpha tagged with its segment's service",
+          by_company.get("Alpha Accounting", {}).get("ejentic_service") == "Multilingual Support")
+    check("every lead carries a non-empty service tag",
+          all((l.get("ejentic_service") or "").strip() for l in leads))
+    check("lead keys still == FIELDS", all(set(l.keys()) == set(FIELDS) for l in leads))
+
+
+def test_provider_order():
+    print("\n[ai: provider fallback order (no network)]")
+    from core import ai
+    check("explicit providers respected + deduped",
+          ai._provider_order({"providers": ["nvidia", "freellmapi", "nvidia"]}) == ["nvidia", "freellmapi"])
+    check("unknown providers dropped",
+          ai._provider_order({"providers": ["bogus", "gemini"]}) == ["gemini"])
+    check("empty config -> gateway-first legacy chain",
+          ai._provider_order({"copy_provider": "nvidia"})[0] == "freellmapi")
+    check("nothing configured -> full default chain",
+          ai._provider_order({}) == ["freellmapi", "gemini", "nvidia"])
+
+
 def main():
     # Patch the two external seams.
     discovery.subprocess.run = fake_run
@@ -224,6 +280,9 @@ def main():
     test_graceful_maps_failure()
     test_stored_in_file()
     test_config_defaults()
+    test_query_specs()
+    test_segments()
+    test_provider_order()
 
     print(f"\n{'='*50}\nRESULT: {PASS} passed, {FAIL} failed\n{'='*50}")
     sys.exit(1 if FAIL else 0)

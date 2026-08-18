@@ -10,24 +10,49 @@
   "demo_mode": false,
   "lead_source": "maps_firecrawl",
   "discovery": {
-    "queries": [
-      "accounting firms in Lagos, Nigeria",
-      "chartered accountants in Lagos, Nigeria",
-      "audit firms in Lagos, Nigeria",
-      "tax consultants in Lagos, Nigeria",
-      "bookkeeping services in Lagos, Nigeria",
-      "accounting firms in Victoria Island, Lagos",
-      "accounting firms in Ikeja, Lagos",
-      "accounting firms in Lekki, Lagos",
-      "accounting firms in Ikoyi, Lagos",
-      "audit and assurance firms in Lagos, Nigeria",
-      "payroll and tax services in Lagos, Nigeria",
-      "accounting and advisory firms in Lagos, Nigeria"
+    "segments": [
+      {
+        "name": "Multilingual customer support",
+        "service": "Localized Multilingual Support Agents",
+        "queries": [
+          "e-commerce companies in Lagos, Nigeria",
+          "online fashion stores in Lagos, Nigeria",
+          "travel agencies in Lagos, Nigeria"
+        ]
+      },
+      {
+        "name": "Lead generation",
+        "service": "AI Lead Generation System",
+        "queries": [
+          "real estate agencies in Lagos, Nigeria",
+          "digital marketing agencies in Lagos, Nigeria",
+          "real estate agencies in Abuja, Nigeria"
+        ]
+      },
+      {
+        "name": "Knowledge base / RAG",
+        "service": "Air-Gapped Internal Knowledge Base (RAG)",
+        "queries": [
+          "law firms in Lagos, Nigeria",
+          "accounting firms in Lagos, Nigeria",
+          "audit firms in Lagos, Nigeria"
+        ]
+      },
+      {
+        "name": "Workflow automation",
+        "service": "Enterprise Workflow Automation",
+        "queries": [
+          "logistics companies in Lagos, Nigeria",
+          "payroll and HR services in Lagos, Nigeria",
+          "tax consultants in Lagos, Nigeria"
+        ]
+      }
     ],
-    "max_results": 20,
+    "max_results": 10,
     "max_leads": 50,
     "require_email": true,
-    "scrape_pages": ["", "contact", "about"]
+    "scrape_pages": ["", "contact"],
+    "max_workers": 3
   },
   "timezone": "Africa/Lagos",
   "booking": {
