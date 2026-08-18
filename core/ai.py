@@ -15,6 +15,7 @@ share exactly one code path.
 
 import os
 import json
+import time
 
 import requests
 
@@ -41,18 +42,33 @@ def _freellmapi_chat(cfg, prompt, temperature=0.4, max_tokens=800):
     model = (cfg.get("freellmapi_model") or "").strip()
     if model and model.lower() != "auto":
         body["model"] = model
-    resp = requests.post(
-        f"{base}/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json=body,
-        timeout=60,   # the gateway may try several upstreams before one answers
-    )
-    if resp.status_code != 200:
-        raise RuntimeError(f"FreeLLMAPI {resp.status_code}: {resp.text[:200]}")
-    content = (resp.json()["choices"][0]["message"].get("content") or "").strip()
-    if not content:
-        raise RuntimeError("FreeLLMAPI returned empty content")
-    return content
+    # Each call re-rolls the gateway's internal routing, so a transient 502 (an
+    # upstream that's momentarily unreachable — e.g. a blocked Gemini endpoint — or
+    # a tier that needs billing) is usually cleared by simply trying again: the
+    # retry lands on a healthy provider (Mistral, Groq, Cerebras, ...) instead of
+    # letting generate() cascade to a dead direct-Gemini / slow direct-NVIDIA.
+    # Attempts are configurable via cfg["freellmapi_attempts"].
+    attempts = max(1, int(cfg.get("freellmapi_attempts", 4)))
+    last_err = None
+    for i in range(attempts):
+        try:
+            resp = requests.post(
+                f"{base}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=body,
+                timeout=60,   # the gateway may try several upstreams before one answers
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(f"FreeLLMAPI {resp.status_code}: {resp.text[:200]}")
+            content = (resp.json()["choices"][0]["message"].get("content") or "").strip()
+            if not content:
+                raise RuntimeError("FreeLLMAPI returned empty content")
+            return content
+        except Exception as e:
+            last_err = e
+            if i < attempts - 1:
+                time.sleep(0.6 * (i + 1))   # brief backoff, then re-roll the routing
+    raise RuntimeError(f"FreeLLMAPI failed after {attempts} attempt(s). Last error: {last_err}")
 
 
 def _gemini_chat(cfg, prompt):
