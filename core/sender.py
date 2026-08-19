@@ -78,7 +78,7 @@ class SendingPool:
 
     def send(self, conn, to_email, subject, body_text,
              footer_html="", footer_text="", throttle=True,
-             in_reply_to=None, references=None):
+             in_reply_to=None, references=None, list_unsubscribe=None):
         """Send one email through the pool. Returns a result dict.
 
         Raises SendCapExceeded (before any SMTP) if a cap is hit, or SendError
@@ -88,6 +88,10 @@ class SendingPool:
         `in_reply_to`/`references` (Message-IDs) thread an approved reply under the
         prospect's message in Gmail. Every send is stamped with its own Message-ID,
         which is stored so a future inbound reply can be matched back to it.
+
+        `list_unsubscribe` (an https URL) adds the List-Unsubscribe + one-click
+        headers that Gmail/Yahoo expect from legitimate senders — a positive
+        deliverability signal, not a spam one.
         """
         if state.sends_today(conn, self.client) >= self.global_cap:
             raise SendCapExceeded(f"daily global cap reached ({self.global_cap})")
@@ -121,6 +125,11 @@ class SendingPool:
             msg["References"] = references or in_reply_to
         elif references:
             msg["References"] = references
+
+        # List-Unsubscribe (+ one-click) — expected by Gmail/Yahoo from real senders.
+        if list_unsubscribe:
+            msg["List-Unsubscribe"] = f"<{list_unsubscribe}>"
+            msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 
         html_body = (
             '<html><body style="font-family:Arial,sans-serif;line-height:1.6;color:#333;">'

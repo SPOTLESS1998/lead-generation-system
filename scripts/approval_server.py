@@ -97,6 +97,7 @@ def approve(lead_id):
                 conn, to_email, data["drafted_subject"], body,
                 footer_html=footer_html, footer_text=footer_text, throttle=False,
                 in_reply_to=data.get("in_reply_to"), references=data.get("references"),
+                list_unsubscribe=unsub,
             )
             if booked:
                 state.record_booking(conn, client, to_email,
@@ -123,6 +124,7 @@ def approve(lead_id):
             conn, to_email, data["drafted_subject"], data["drafted_body"],
             footer_html=footer_html, footer_text=footer_text,
             throttle=False,  # a human clicking already paces sends; throttle is for batch/cron
+            list_unsubscribe=unsub,
         )
     except sender.SendCapExceeded as e:
         return page("Daily Limit Reached",
@@ -150,7 +152,7 @@ def decline(lead_id):
     return page("Draft Declined", "The draft has been discarded and will not be sent.", "❌"), 200
 
 
-@app.route('/unsubscribe/<token>')
+@app.route('/unsubscribe/<token>', methods=['GET', 'POST'])
 def unsubscribe(token):
     parsed = compliance.verify_token(token, config.unsub_secret())
     if not parsed:

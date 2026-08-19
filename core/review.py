@@ -13,13 +13,14 @@ The queue file (pending_leads.json) is a transient hand-off; it is git-ignored.
 """
 
 import os
+import html
 import json
 import uuid
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-from . import config
+from . import config, spam
 
 PENDING_FILE = os.path.join(config.ROOT, "pending_leads.json")
 
@@ -42,9 +43,17 @@ def _write(leads):
 
 
 def save_pending(entry):
-    """Store a draft (adds status='pending'); returns its short id."""
+    """Store a draft (adds status='pending'); returns its short id.
+
+    Every draft is run through the offline spam linter here (the single chokepoint
+    both agents pass through), so the score + flagged words are stashed on the entry
+    and shown to the operator in the approval email.
+    """
     entry.setdefault("kind", "cold")
     entry["status"] = "pending"
+    if "spam" not in entry:
+        entry["spam"] = spam.check(entry.get("drafted_subject", ""),
+                                   entry.get("drafted_body", ""))
     leads = load_pending()
     lead_id = str(uuid.uuid4())[:8]
     leads[lead_id] = entry
@@ -80,6 +89,29 @@ def _buttons(dashboard, lead_id):
     )
 
 
+def _spam_html(entry):
+    """Render the spam-linter readout block (empty string if no check was run)."""
+    result = entry.get("spam")
+    if not result:
+        return ""
+    palette = {
+        "ok":   ("#e8f5e9", "#4CAF50", "✅ Spam check: looks clean"),
+        "warn": ("#fff8e1", "#ffb300", "⚠️ Spam check: minor issues"),
+        "high": ("#ffebee", "#e53935", "🚫 Spam check: high risk — consider editing"),
+    }
+    bg, border, title = palette.get(result.get("level", "ok"), palette["ok"])
+    flags = result.get("flags") or []
+    if flags:
+        items = "".join(f'<li>{html.escape(f.get("detail", ""))}</li>' for f in flags)
+        inner = f'<ul style="margin:8px 0 0;padding-left:20px;">{items}</ul>'
+    else:
+        inner = '<p style="margin:8px 0 0;">No trigger words or risky patterns found.</p>'
+    return (
+        f'<div style="background:{bg};padding:15px;border-left:4px solid {border};margin-bottom:20px;">'
+        f'<strong>{title} (score {result.get("score", 0)})</strong>{inner}</div>'
+    )
+
+
 def _cold_body(cfg, lead_id, entry, dashboard):
     body_html = (entry.get("drafted_body") or "").replace(chr(10), "<br>")
     name = f'{entry.get("first_name","")} {entry.get("last_name","")}'.strip()
@@ -94,6 +126,7 @@ def _cold_body(cfg, lead_id, entry, dashboard):
         f'<div style="background:#f1f8e9;padding:15px;border-left:4px solid #4CAF50;margin-bottom:20px;">'
         f'<strong>PROPOSED PITCH:</strong><br>'
         f'<strong>Subject:</strong> {entry.get("drafted_subject","")}<br><br>{body_html}</div>'
+        f'{_spam_html(entry)}'
         f'<p>Approve to send (goes to your controlled inbox in demo mode):</p>'
         f'{_buttons(dashboard, lead_id)}'
     )
@@ -121,6 +154,7 @@ def _reply_body(cfg, lead_id, entry, dashboard):
         f'<div style="background:#f1f8e9;padding:15px;border-left:4px solid #4CAF50;margin-bottom:20px;">'
         f'<strong>DRAFTED REPLY:</strong><br>'
         f'<strong>Subject:</strong> {entry.get("drafted_subject","")}<br><br>{reply_html}</div>'
+        f'{_spam_html(entry)}'
         f'<p>Approve to send this reply in-thread'
         f'{" and create the calendar event" if meeting else ""} '
         f'(goes to your controlled inbox in demo mode):</p>'
