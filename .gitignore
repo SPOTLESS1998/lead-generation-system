@@ -15,6 +15,7 @@ data/
 *.sqlite-wal
 *.sqlite-shm
 pending_leads.json
+pending_leads.json.bak
 
 # --- OS noise ---
 .DS_Store

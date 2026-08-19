@@ -7,7 +7,7 @@ import time
 
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core import config, state, suppression, review, leads as leads_source
+from core import config, state, suppression, review, magnet, leads as leads_source
 from core.ai import generate
 
 # Safety valve: how many drafts to prepare in a single run (no point drafting more
@@ -49,8 +49,8 @@ def generate_strategy(cfg, lead):
 
     CRITICAL INSTRUCTIONS:
     1. Identify ONE realistic operational bottleneck they face based on their industry.
-    2. Invent a highly tailored "Free Gift" (Lead Magnet) that we can offer them to solve a small part of that bottleneck (e.g., a free prototype, an ROI calculator, a custom checklist).
-    3. Write a brief for your copywriter explaining exactly what the bottleneck is and what the free gift is.
+    2. The "Free Gift" (Lead Magnet) we always offer is a personalized mini-audit / AI blueprint page tailored to this prospect. Describe what that audit should focus on for them.
+    3. Write a brief for your copywriter explaining exactly what the bottleneck is and what the personalized audit will cover.
 
     Output ONLY the strategic brief.
     """
@@ -58,8 +58,23 @@ def generate_strategy(cfg, lead):
     return brief, provider
 
 
-def generate_copy(cfg, lead, strategy_brief):
+def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     print_step(f"✍️  [Copywriter] Drafting the email for {lead['company_name']}...")
+
+    # The "free gift" is a real, personalized audit page. We hand the copywriter the
+    # actual URL and require it verbatim, so the email never ships a dead placeholder.
+    if magnet_url:
+        gift_instruction = (
+            f'4. Offer them their free personalized AI audit and include this EXACT link on its own '
+            f'line so they can open it right away: {magnet_url}\n'
+            f'   Write the URL in full and unchanged. Never use placeholder text like "[Link to Free Gift]".'
+        )
+    else:
+        gift_instruction = (
+            '4. Offer to send them a free personalized AI audit and invite them to reply if they want it. '
+            'Do NOT invent or include any link.'
+        )
+
     prompt = f"""
     You are an expert, high-converting B2B Copywriter.
     Your Lead Strategist has provided you with the following strategy to pitch a prospect:
@@ -76,8 +91,9 @@ def generate_copy(cfg, lead, strategy_brief):
     1. Start with a highly personalized greeting using their first name ('Hi {lead['first_name']},').
     2. Be extremely concise (under 100 words), human-sounding, and conversational.
     3. Do not sound like an AI. Do not use corporate buzzwords.
-    4. Do NOT ask for permission to send the Free Gift. Provide the Free Gift directly in the email by including a placeholder link (e.g., "I've included a link to the prototype below for you to test.\n\n[Link to Free Gift]").
-    5. Start the very first line strictly with 'Subject: ' to provide the email subject.
+    {gift_instruction}
+    5. Deliverability: write in plain, natural language. Avoid spam-trigger words (free money, guarantee, act now, limited time, click here, 100%, cash, urgent, risk-free), do not use ALL-CAPS words, do not use more than one exclamation mark, and only ever use https links.
+    6. Start the very first line strictly with 'Subject: ' to provide the email subject.
 
     Output ONLY the email subject and body. No other text.
     """
@@ -156,6 +172,8 @@ def main():
         state.upsert_lead(conn, cfg["client"], lead,
                           niche=lead.get("ejentic_service") or None, status="queued")
 
+        magnet_url = None
+        magnet_token = None
         if cfg["demo_mode"]:
             print_step(f"🧠 [demo] Strategist analyzing {lead['company_name']}...")
             time.sleep(1.0)
@@ -164,7 +182,18 @@ def main():
         else:
             try:
                 brief, _ = generate_strategy(cfg, lead)
-                subject, body, provider = generate_copy(cfg, lead, brief)
+                # Build the prospect's real "free gift": a personalized audit page,
+                # stored now so its link resolves the moment the email is approved.
+                try:
+                    content = magnet.build_content(cfg, lead, brief)
+                    magnet_token = magnet.new_token()
+                    state.save_magnet(conn, cfg["client"], magnet_token, lead["email"], content)
+                    magnet_url = magnet.url(cfg, cfg["client"], magnet_token)
+                    print_step(f"🎁 [Magnet] Built personalized audit page → {magnet_url}")
+                except Exception as e:
+                    print(f"   ⚠️  Magnet generation failed ({e}); drafting without a link.")
+                    magnet_url = None
+                subject, body, provider = generate_copy(cfg, lead, brief, magnet_url)
             except Exception as e:
                 print(f"   ❌ Generation failed for {lead['company_name']}: {e}. "
                       f"Leaving lead 'queued' for retry.")
@@ -185,6 +214,8 @@ def main():
             "title": lead["title"],
             "drafted_subject": subject,
             "drafted_body": body,
+            "magnet_url": magnet_url,
+            "magnet_token": magnet_token,
         }
         lead_id = review.save_pending(entry)
         review.notify_operator(cfg, lead_id, entry)

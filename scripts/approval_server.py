@@ -9,7 +9,7 @@ from flask import Flask
 
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core import config, state, sender, suppression, compliance, review
+from core import config, state, sender, suppression, compliance, review, magnet
 from core import calendar as gcal   # core/calendar.py (the booking seam), not stdlib calendar
 
 app = Flask(__name__)
@@ -166,6 +166,29 @@ def unsubscribe(token):
     print(f"\n[!] UNSUBSCRIBE: {email} (client={client}) added to suppression list.")
     return page("Unsubscribed",
                 f"<b>{email}</b> has been removed and will not be contacted again."), 200
+
+
+@app.route('/magnet/<client>/<token>')
+def magnet_page(client, token):
+    """Serve a prospect's real, personalized lead-magnet page.
+
+    Two path segments (/magnet/<client>/<token>) so it never collides with the
+    single-segment demo pages below (/magnet/blueprint etc.). The content was
+    generated + stored when the cold email was drafted (see core/magnet.py).
+    """
+    try:
+        cfg = get_cfg(client)
+    except Exception:
+        return page("Link Not Found", "This resource link is not valid.", "⚠️"), 404
+    conn = open_conn(cfg)
+    try:
+        content = state.get_magnet(conn, client, token)
+    finally:
+        conn.close()
+    if not content:
+        return page("Link Not Found",
+                    "This resource has expired or the link is invalid.", "⚠️"), 404
+    return magnet.render_html(cfg, content), 200
 
 
 @app.route('/magnet/blueprint')

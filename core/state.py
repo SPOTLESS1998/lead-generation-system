@@ -13,6 +13,7 @@ the same DB safely. connect() runs a tiny idempotent migration so DBs created
 before Tier 2 gain the new column/tables without losing data.
 """
 
+import json
 import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
@@ -77,6 +78,16 @@ CREATE TABLE IF NOT EXISTS bookings (
     event_id   TEXT,
     starts_at  TEXT,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS magnets (
+    id         INTEGER PRIMARY KEY,
+    client     TEXT NOT NULL,
+    token      TEXT NOT NULL,       -- unguessable id in the magnet URL
+    lead_email TEXT,                -- who this page was built for
+    content    TEXT NOT NULL,       -- JSON: the page's structured content (see core/magnet.py)
+    created_at TEXT NOT NULL,
+    UNIQUE(client, token)
 );
 
 CREATE INDEX IF NOT EXISTS idx_sends_client_mailbox_day ON sends(client, mailbox, sent_at);
@@ -240,3 +251,32 @@ def record_booking(conn, client, lead_email, event_id, starts_at):
         "UPDATE leads SET status='meeting_booked' WHERE client=? AND email=?", (client, lead_email)
     )
     conn.commit()
+
+
+# --- magnets (personalized lead-magnet pages) ------------------------------
+
+def save_magnet(conn, client, token, lead_email, content):
+    """Store one prospect's magnet page content (a dict, saved as JSON).
+
+    Keyed by (client, token); re-saving the same token refreshes its content.
+    """
+    conn.execute(
+        """INSERT INTO magnets (client, token, lead_email, content, created_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(client, token) DO UPDATE SET content=excluded.content""",
+        (client, token, lead_email, json.dumps(content), _now()),
+    )
+    conn.commit()
+
+
+def get_magnet(conn, client, token):
+    """Return the stored content dict for a magnet page, or None if unknown."""
+    row = conn.execute(
+        "SELECT content FROM magnets WHERE client=? AND token=?", (client, token)
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row["content"])
+    except (ValueError, TypeError):
+        return None
