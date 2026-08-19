@@ -41,7 +41,7 @@ DEFAULTS = {
     "gemini_model": "gemini-2.5-flash",
     "nvidia_model": "meta/llama-3.1-70b-instruct",
     "demo_mode": False,                      # False = real AI generation
-    "lead_source": "csv",                    # "csv" (curated file) | "maps_firecrawl" (auto-discovery)
+    "lead_source": "csv",                    # "csv" (curated file) | "maps_firecrawl" | "yellowpages" (auto-discovery)
     "discovery": {                           # used only when lead_source == "maps_firecrawl"
         "queries": [],                       # flat Maps queries (fallback if no segments)
         "segments": [],                      # ICP segments: [{name, service, queries:[...]}, ...]
@@ -53,6 +53,19 @@ DEFAULTS = {
         "scrape_pages": ["", "contact"],     # paths to try (homepage first; stops once an email is found)
         "max_workers": 3,                    # concurrent Composio calls (higher => more rate-limit hits)
         "maps_search_slug": "GOOGLE_MAPS_TEXT_SEARCH",
+        "firecrawl_scrape_slug": "FIRECRAWL_SCRAPE",
+    },
+    "yellowpages": {                         # used only when lead_source == "yellowpages"
+        "search_url_template": "https://www.yellowpages.com/search?search_terms={query}&geo_location_terms={location}",
+        "location": "",                      # geographic filter, e.g. "Lagos" (blank = national)
+        "queries": [],                       # flat YP searches (fallback if no segments)
+        "segments": [],                      # ICP segments: [{name, service, queries:[...]}, ...]
+                                             #   each lead is tagged with the segment's `service`
+        "max_listings_per_query": 20,        # businesses to take from each results page
+        "max_leads": 25,                     # overall cap on leads returned per run
+        "require_email": True,               # skip businesses with no discoverable public email
+        "scrape_pages": ["", "contact"],     # paths to try on each business site (homepage first)
+        "max_workers": 6,                    # concurrent Composio (Firecrawl) calls
         "firecrawl_scrape_slug": "FIRECRAWL_SCRAPE",
     },
     "timezone": "UTC",                        # IANA tz for proposing/booking meetings
