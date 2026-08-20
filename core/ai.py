@@ -37,20 +37,27 @@ def _freellmapi_chat(cfg, prompt, temperature=0.4, max_tokens=800):
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
-    # A specific model can be pinned via config; "" / "auto" means let the gateway
-    # auto-route (this build rejects a literal "auto", so we simply omit the field).
-    model = (cfg.get("freellmapi_model") or "").strip()
-    if model and model.lower() != "auto":
-        body["model"] = model
-    # Each call re-rolls the gateway's internal routing, so a transient 502 (an
-    # upstream that's momentarily unreachable — e.g. a blocked Gemini endpoint — or
-    # a tier that needs billing) is usually cleared by simply trying again: the
-    # retry lands on a healthy provider (Mistral, Groq, Cerebras, ...) instead of
-    # letting generate() cascade to a dead direct-Gemini / slow direct-NVIDIA.
-    # Attempts are configurable via cfg["freellmapi_attempts"].
-    attempts = max(1, int(cfg.get("freellmapi_attempts", 4)))
+    # Which model(s) to request. `freellmapi_model` may be a single string OR a
+    # LIST of model ids; a list is rotated across attempts so a model that 404s,
+    # is retired, or is rate-limited fails over to the next KNOWN-GOOD model. This
+    # is deliberately NOT the gateway's own auto-router — that has been observed
+    # routing to retired upstreams (e.g. Ollama Cloud models pulled 2026-07-15)
+    # and returning 502/410 instead of failing past them. "" / "auto" / [] means
+    # omit the field and let the gateway auto-route.
+    pinned = cfg.get("freellmapi_model") or ""
+    if isinstance(pinned, str):
+        s = pinned.strip()
+        models = [s] if s and s.lower() != "auto" else []
+    else:
+        models = [m.strip() for m in pinned
+                  if isinstance(m, str) and m.strip() and m.strip().lower() != "auto"]
+    # Attempts are configurable via cfg["freellmapi_attempts"], but always make at
+    # least one full pass over every pinned model before giving up.
+    attempts = max(int(cfg.get("freellmapi_attempts", 4)), len(models) or 1)
     last_err = None
     for i in range(attempts):
+        if models:
+            body["model"] = models[i % len(models)]   # rotate: model A, B, A, B, ...
         try:
             resp = requests.post(
                 f"{base}/chat/completions",
@@ -67,7 +74,7 @@ def _freellmapi_chat(cfg, prompt, temperature=0.4, max_tokens=800):
         except Exception as e:
             last_err = e
             if i < attempts - 1:
-                time.sleep(0.6 * (i + 1))   # brief backoff, then re-roll the routing
+                time.sleep(0.6 * (i + 1))   # brief backoff, then try the next model
     raise RuntimeError(f"FreeLLMAPI failed after {attempts} attempt(s). Last error: {last_err}")
 
 

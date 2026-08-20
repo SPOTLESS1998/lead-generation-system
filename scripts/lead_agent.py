@@ -8,7 +8,7 @@ import time
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import config, state, suppression, review, magnet, leads as leads_source
-from core.ai import generate
+from core.ai import generate, generate_json
 
 # Safety valve: how many drafts to prepare in a single run (no point drafting more
 # than a day's sending capacity). The sending cap is enforced separately at send time.
@@ -88,23 +88,27 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
 
     INSTRUCTIONS:
     Write a cold outreach email based exactly on the Strategy Brief.
-    1. Start with a highly personalized greeting using their first name ('Hi {lead['first_name']},').
+    1. Start the body with a highly personalized greeting using their first name ('Hi {lead['first_name']},').
     2. Be extremely concise (under 100 words), human-sounding, and conversational.
     3. Do not sound like an AI. Do not use corporate buzzwords.
     {gift_instruction}
     5. Deliverability: write in plain, natural language. Avoid spam-trigger words (free money, guarantee, act now, limited time, click here, 100%, cash, urgent, risk-free), do not use ALL-CAPS words, do not use more than one exclamation mark, and only ever use https links.
-    6. Start the very first line strictly with 'Subject: ' to provide the email subject.
 
-    Output ONLY the email subject and body. No other text.
+    Reply with ONLY a JSON object, no prose and no markdown fences:
+    {{"subject": "<the subject line, WITHOUT a 'Subject:' prefix>", "body": "<the full email body, greeting through sign-off, using real newlines>"}}
     """
-    content, provider = generate(cfg, prompt)
-    lines = content.split('\n')
-    subject = f"A quick idea for {lead['company_name']}"
-    if lines and lines[0].startswith("Subject:"):
-        subject = lines[0].replace("Subject:", "").strip()
-        body = "\n".join(lines[1:]).strip()
-    else:
-        body = content
+    # JSON (not free text) so a model that emits chain-of-thought around the answer
+    # can't leak its reasoning into the email — generate_json pulls out the {…} block
+    # regardless of any preamble/trailer. An empty body raises → lead_agent rolls the
+    # lead back and retries rather than shipping a blank pitch.
+    obj, provider = generate_json(cfg, prompt)
+    subject = (obj.get("subject") or "").strip() or f"A quick idea for {lead['company_name']}"
+    body = (obj.get("body") or "").strip()
+    if not body:
+        raise RuntimeError("copywriter returned an empty body")
+    # We promised a personalized link; guarantee it's actually in the email.
+    if magnet_url and magnet_url not in body:
+        body = f"{body}\n\n{magnet_url}"
     return subject, body, provider
 
 
@@ -206,7 +210,14 @@ def main():
                 subject, body, provider = generate_copy(cfg, lead, brief, magnet_url)
             except Exception as e:
                 print(f"   ❌ Generation failed for {lead['company_name']}: {e}. "
-                      f"Leaving lead 'queued' for retry.")
+                      f"Rolling back so this lead retries on the next run.")
+                # We 'claimed' this lead as queued BEFORE drafting so a re-run
+                # wouldn't double-draft it. Since no draft was produced, undo that
+                # claim by removing the row — otherwise a stuck 'queued' status
+                # counts as already_contacted forever and the lead is never retried.
+                conn.execute("DELETE FROM leads WHERE client=? AND email=?",
+                             (cfg["client"], lead["email"]))
+                conn.commit()
                 continue
 
         print("\n📝 --- DRAFTED PITCH READY ---")
