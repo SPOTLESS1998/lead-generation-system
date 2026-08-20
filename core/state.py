@@ -253,6 +253,20 @@ def record_booking(conn, client, lead_email, event_id, starts_at):
     conn.commit()
 
 
+def latest_booking(conn, client, email):
+    """The most recent booking row for a lead (event_id, starts_at, created_at), or None.
+
+    Used by the one-click buttons to stay idempotent: a second 'Interested' click,
+    or a stray 'Not interested' click after booking, shows the existing meeting
+    instead of double-booking or cancelling it.
+    """
+    return conn.execute(
+        "SELECT event_id, starts_at, created_at FROM bookings "
+        "WHERE client=? AND lead_email=? ORDER BY created_at DESC LIMIT 1",
+        (client, email),
+    ).fetchone()
+
+
 # --- magnets (personalized lead-magnet pages) ------------------------------
 
 def save_magnet(conn, client, token, lead_email, content):

@@ -63,3 +63,49 @@ def footer(client_cfg, unsubscribe_url, channel="html"):
         f"{address}\n"
         f"Unsubscribe: {unsubscribe_url}\n"
     )
+
+
+def cta_urls(client_cfg, token):
+    """The two one-click prospect endpoints for a cold email: (interested, not).
+
+    Reuses the SAME signed (client, email) token as the unsubscribe link — the
+    action lives in the route, not the token — so no new token type is needed.
+    """
+    base = (client_cfg.get("unsubscribe_base_url") or "").rstrip("/")
+    return f"{base}/interested/{token}", f"{base}/not-interested/{token}"
+
+
+def cta_buttons(client_cfg, token, channel="html"):
+    """Prospect-facing 'Yes, I'm interested' / 'Not interested' buttons.
+
+    The whole point of Tier 2's frictionless reply: one click books a meeting (or
+    opts out) with zero typing. Replying by email still works too, so a mis-click
+    is always recoverable — the reply agent re-processes an interested reply even
+    from someone who earlier clicked 'Not interested'.
+    """
+    yes_url, no_url = cta_urls(client_cfg, token)
+    if channel == "html":
+        return (
+            '<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+            'style="margin:22px 0 4px;"><tr>'
+            '<td style="padding-right:12px;">'
+            f'<a href="{yes_url}" style="display:inline-block;background:#16a34a;'
+            'color:#ffffff;text-decoration:none;font-family:Arial,sans-serif;font-size:15px;'
+            'font-weight:bold;padding:12px 24px;border-radius:6px;">Yes, I\'m interested</a>'
+            '</td><td>'
+            f'<a href="{no_url}" style="display:inline-block;background:#eeeeee;'
+            'color:#555555;text-decoration:none;font-family:Arial,sans-serif;font-size:15px;'
+            'padding:12px 24px;border-radius:6px;">Not interested</a>'
+            '</td></tr></table>'
+            '<p style="font-size:12px;color:#999;line-height:1.5;'
+            'font-family:Arial,sans-serif;margin:6px 0 0;">'
+            'One click — no need to type anything. Prefer to write back? '
+            'Just reply to this email.</p>'
+        )
+    return (
+        "\n\nInterested? Book a quick call in one click:\n"
+        f"  {yes_url}\n"
+        "Not interested / please stop:\n"
+        f"  {no_url}\n"
+        "(Or just reply to this email — a reply works too.)\n"
+    )

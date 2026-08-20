@@ -4,12 +4,12 @@ warnings.filterwarnings('ignore')
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core import config, state, suppression, review, inbox
+from core import config, state, suppression, review, inbox, scheduling
 from core.ai import generate_json
 
 # The intents the classifier may assign. Anything else is treated as "question"
@@ -102,32 +102,6 @@ Reply with ONLY a JSON object, no prose:
 """
     obj, provider = generate_json(cfg, prompt)
     return obj, provider
-
-
-def _safe_future_slot(proposed, tz, min_days=2, hour=11):
-    """Return a valid 'YYYY-MM-DD HH:MM' that is strictly in the future.
-
-    The model can still propose a past or unparseable date despite the prompt;
-    never let that reach the calendar. Keeps a good proposal as-is, otherwise
-    falls back to `min_days` days out at `hour`:00 local, skipping weekends.
-    """
-    try:
-        now = datetime.now(ZoneInfo(tz))
-    except Exception:
-        now = datetime.now()
-    if proposed:
-        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M"):
-            try:
-                dt = datetime.strptime(proposed.strip(), fmt).replace(tzinfo=now.tzinfo)
-                if dt > now:
-                    return dt.strftime("%Y-%m-%d %H:%M")
-                break
-            except ValueError:
-                continue
-    dt = (now + timedelta(days=min_days)).replace(hour=hour, minute=0, second=0, microsecond=0)
-    while dt.weekday() >= 5:  # nudge Sat/Sun → Monday
-        dt += timedelta(days=1)
-    return dt.strftime("%Y-%m-%d %H:%M")
 
 
 # --------------------------------------------------------------------------
@@ -240,8 +214,8 @@ def main():
             if intent == "interested":
                 entry["meeting"] = {
                     "title": (draft.get("meeting_title") or f"Intro call — {cfg['client_name']}"),
-                    "start_local": _safe_future_slot(draft.get("proposed_start_local"),
-                                                     cfg.get("timezone", "UTC")),
+                    "start_local": scheduling.safe_future_slot(
+                        draft.get("proposed_start_local"), cfg.get("timezone", "UTC")),
                     "duration_min": int(draft.get("duration_min")
                                         or cfg.get("booking", {}).get("default_duration_min", 30)),
                     "attendee_email": lead_email,

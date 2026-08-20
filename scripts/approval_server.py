@@ -5,12 +5,13 @@ import os
 import sys
 import html
 import logging
+from datetime import datetime
 
 from flask import Flask
 
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core import config, state, sender, suppression, compliance, review, magnet
+from core import config, state, sender, suppression, compliance, review, magnet, scheduling
 from core import calendar as gcal   # core/calendar.py (the booking seam), not stdlib calendar
 
 app = Flask(__name__)
@@ -35,6 +36,21 @@ def page(title, body, emoji="✅"):
     return f"""<html><body style="font-family: Arial, sans-serif; text-align:center; margin-top:60px; color:#333;">
     <h1>{emoji} {title}</h1><p style="font-size:16px; color:#555;">{body}</p>
     <p style="color:#999;">You may now close this tab.</p></body></html>"""
+
+
+def _friendly_when(when_str, tz):
+    """'2026-08-25 10:00' (or ISO) → 'Monday, 25 Aug 2026 at 10:00 (Africa/Lagos)'.
+
+    Falls back to the raw string if it doesn't parse — never blocks a page render.
+    """
+    if not when_str:
+        return "your scheduled time"
+    s = str(when_str).strip().replace(" ", "T", 1)
+    try:
+        dt = datetime.fromisoformat(s)
+        return dt.strftime("%A, %d %b %Y at %H:%M") + f" ({tz})"
+    except Exception:
+        return f"{when_str} ({tz})"
 
 
 # --- routes ----------------------------------------------------------------
@@ -205,12 +221,17 @@ def approve(lead_id):
                         f"Threaded reply delivered to <b>{dest}</b> (intended for "
                         f"{result['intended_for']}), via {result['mailbox']}.{note}"), 200
 
-        # kind == "cold" (default) — unchanged Tier 1 behavior.
+        # kind == "cold" (default) — Tier 1 send + one-click prospect buttons.
+        # The buttons reuse the same signed token as the unsubscribe link; a click
+        # on "interested"/"not-interested" hits the routes below.
+        cta_html = compliance.cta_buttons(cfg, token, "html")
+        cta_text = compliance.cta_buttons(cfg, token, "text")
         result = pool.send(
             conn, to_email, data["drafted_subject"], data["drafted_body"],
             footer_html=footer_html, footer_text=footer_text,
             throttle=False,  # a human clicking already paces sends; throttle is for batch/cron
             list_unsubscribe=unsub,
+            cta_html=cta_html, cta_text=cta_text,
         )
     except sender.SendCapExceeded as e:
         return page("Daily Limit Reached",
@@ -254,6 +275,114 @@ def unsubscribe(token):
     print(f"\n[!] UNSUBSCRIBE: {email} (client={client}) added to suppression list.")
     return page("Unsubscribed",
                 f"<b>{email}</b> has been removed and will not be contacted again."), 200
+
+
+@app.route('/interested/<token>')
+def interested(token):
+    """One-click 'Yes, I'm interested' from a cold email → book a meeting, no typing.
+
+    Books the next sensible business-day slot (10:00 local), creates a real Google
+    Calendar event, and confirms on-screen. Idempotent: a second click shows the
+    existing booking instead of double-booking. If the calendar step fails, we
+    still record their interest and tell them we'll follow up (graceful degrade).
+    """
+    parsed = compliance.verify_token(token, config.unsub_secret())
+    if not parsed:
+        return page("Invalid Link",
+                    "This link is invalid or has been tampered with.", "⚠️"), 400
+    client, email = parsed
+    try:
+        cfg = get_cfg(client)
+    except Exception:
+        return page("Link Not Found", "This link is not valid.", "⚠️"), 404
+
+    conn = open_conn(cfg)
+    tz = cfg.get("timezone", "UTC")
+    company = html.escape(cfg.get("client_name", "us"))
+    try:
+        # Idempotent: already booked? Show the existing time, don't book again.
+        existing = state.latest_booking(conn, client, email)
+        if existing:
+            when = _friendly_when(existing["starts_at"], tz)
+            return page("You're already booked 📅",
+                        f"We've got you down for <b>{when}</b>. See you then! "
+                        f"Need a different time? Just reply to our email.", "📅"), 200
+
+        # One click = book the next sensible business-day slot (10:00 local).
+        start_local = scheduling.safe_future_slot(None, tz, hour=10)
+        # Attendee follows the sending mode: never invite a real stranger during a
+        # controlled demo — point the invite at the safe inbox instead.
+        attendee = (cfg["sending"]["controlled_inbox"]
+                    if cfg["sending"]["mode"] == "controlled" else email)
+        try:
+            booked = gcal.create_event(
+                cfg,
+                summary=f"Intro call — {cfg['client_name']}",
+                start_local=start_local,
+                duration_min=int(cfg.get("booking", {}).get("default_duration_min", 30)),
+                attendee_email=attendee,
+                description=f"Booked via the one-click 'Interested' button by {email}.",
+            )
+        except gcal.CalendarError as e:
+            # Graceful degrade: keep their interest, promise a follow-up.
+            print(f"⚠️  One-click booking failed for {email} ({e}); recorded interest instead.")
+            state.set_status(conn, client, email, "interested")
+            return page("Thanks — you're on the list! 🎉",
+                        f"Great to hear you're interested in {company}. We'll email you "
+                        f"shortly to lock in a time. Talk soon!", "🎉"), 200
+
+        state.record_booking(conn, client, email,
+                             booked.get("event_id"), booked.get("start_iso"))
+        when = _friendly_when(booked.get("start_iso") or start_local, tz)
+        link = booked.get("html_link")
+        extra = (f'<br><br><a href="{html.escape(link)}" '
+                 f'style="color:#2e7d32;font-weight:bold;">Add to your calendar →</a>'
+                 if link else "")
+        print(f"✅ One-click booking for {email} at {start_local} ({tz}).")
+        return page("You're booked! 🎉",
+                    f"Your intro call with {company} is set for <b>{when}</b>.{extra}"
+                    f"<br><br>Need a different time? Just reply to our email and "
+                    f"we'll reschedule.", "📅"), 200
+    finally:
+        conn.close()
+
+
+@app.route('/not-interested/<token>')
+def not_interested(token):
+    """One-click 'Not interested' from a cold email → opt them out.
+
+    A stray click after a meeting is already booked does NOT cancel it — we show
+    the booking and tell them to reply if they really want to cancel. Suppression
+    only stops future OUTBOUND cold sends; it never blocks the inbound reply path,
+    so someone who mis-clicks here can still email back and get booked.
+    """
+    parsed = compliance.verify_token(token, config.unsub_secret())
+    if not parsed:
+        return page("Invalid Link",
+                    "This link is invalid or has been tampered with.", "⚠️"), 400
+    client, email = parsed
+    try:
+        cfg = get_cfg(client)
+    except Exception:
+        return page("Link Not Found", "This link is not valid.", "⚠️"), 404
+
+    conn = open_conn(cfg)
+    tz = cfg.get("timezone", "UTC")
+    try:
+        # Don't let a mis-click cancel a real meeting.
+        existing = state.latest_booking(conn, client, email)
+        if existing:
+            when = _friendly_when(existing["starts_at"], tz)
+            return page("You have a meeting booked 📅",
+                        f"You're currently booked for <b>{when}</b>. To cancel or "
+                        f"reschedule, just reply to our email and we'll sort it out.", "📅"), 200
+        suppression.add(conn, client, email, reason="not_interested")
+    finally:
+        conn.close()
+    print(f"\n[!] NOT-INTERESTED click: {email} (client={client}) suppressed.")
+    return page("No problem — thanks for letting us know",
+                "We won't email you again. Changed your mind? Just reply to our last "
+                "email and we'll pick things up.", "👍"), 200
 
 
 @app.route('/magnet/<client>/<token>')

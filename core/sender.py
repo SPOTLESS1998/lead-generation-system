@@ -108,7 +108,8 @@ class SendingPool:
 
     def send(self, conn, to_email, subject, body_text,
              footer_html="", footer_text="", throttle=True,
-             in_reply_to=None, references=None, list_unsubscribe=None):
+             in_reply_to=None, references=None, list_unsubscribe=None,
+             cta_html="", cta_text=""):
         """Send one email through the pool. Returns a result dict.
 
         Raises SendCapExceeded (before any SMTP) if a cap is hit, or SendError
@@ -122,6 +123,10 @@ class SendingPool:
         `list_unsubscribe` (an https URL) adds the List-Unsubscribe + one-click
         headers that Gmail/Yahoo expect from legitimate senders — a positive
         deliverability signal, not a spam one.
+
+        `cta_html`/`cta_text` are prospect-facing one-click buttons (interested /
+        not interested) injected between the body and the CAN-SPAM footer. Like
+        `footer_html`, `cta_html` is trusted raw HTML built by core/compliance.py.
         """
         if state.sends_today(conn, self.client) >= self.global_cap:
             raise SendCapExceeded(f"daily global cap reached ({self.global_cap})")
@@ -163,10 +168,10 @@ class SendingPool:
 
         html_body = (
             '<html><body style="font-family:Arial,sans-serif;line-height:1.6;color:#333;">'
-            f"{_nl2br(body_text)}{footer_html}"
+            f"{_nl2br(body_text)}{cta_html}{footer_html}"
             "</body></html>"
         )
-        msg.attach(MIMEText(body_text + footer_text, "plain", "utf-8"))
+        msg.attach(MIMEText(body_text + cta_text + footer_text, "plain", "utf-8"))
         msg.attach(MIMEText(html_body, "html", "utf-8"))
 
         try:
