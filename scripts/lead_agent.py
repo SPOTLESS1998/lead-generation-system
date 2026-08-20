@@ -60,6 +60,10 @@ def generate_strategy(cfg, lead):
 
 def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     print_step(f"✍️  [Copywriter] Drafting the email for {lead['company_name']}...")
+    # The name the email signs off as. Without this the model invents a
+    # "[Your Name]" placeholder — fine to fix here so both the prompt and the
+    # post-generation safety net below use the same real sender identity.
+    sender_name = (cfg.get("from_name") or cfg.get("client_name") or "our team").strip()
 
     # The "free gift" is a real, personalized audit page. We hand the copywriter the
     # actual URL and require it verbatim, so the email never ships a dead placeholder.
@@ -93,6 +97,7 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     3. Do not sound like an AI. Do not use corporate buzzwords.
     {gift_instruction}
     5. Deliverability: write in plain, natural language. Avoid spam-trigger words (free money, guarantee, act now, limited time, click here, 100%, cash, urgent, risk-free), do not use ALL-CAPS words, do not use more than one exclamation mark, and only ever use https links.
+    6. Sign off warmly using the sender name "{sender_name}" (put "Best," on one line, then "{sender_name}" on the next). Never leave a placeholder such as "[Your Name]", "[Name]", or "[Your name]".
 
     Reply with ONLY a JSON object, no prose and no markdown fences:
     {{"subject": "<the subject line, WITHOUT a 'Subject:' prefix>", "body": "<the full email body, greeting through sign-off, using real newlines>"}}
@@ -106,6 +111,10 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     body = (obj.get("body") or "").strip()
     if not body:
         raise RuntimeError("copywriter returned an empty body")
+    # Safety net: even with the prompt above, models occasionally emit a template
+    # signature. Substitute the real sender name so we never ship "[Your Name]".
+    for _ph in ("[Your Name]", "[Your name]", "[YOUR NAME]", "[Name]", "[name]", "[Your Company]"):
+        body = body.replace(_ph, sender_name)
     # We promised a personalized link; guarantee it's actually in the email.
     if magnet_url and magnet_url not in body:
         body = f"{body}\n\n{magnet_url}"
