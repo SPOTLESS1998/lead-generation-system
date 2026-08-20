@@ -1,0 +1,33 @@
+{
+  "client_name": "Ejentic AI",
+  "from_name": "Ejentic AI",
+  "reply_to": null,
+  "physical_address": "Ejentic AI, 12 Admiralty Way, Lekki Phase 1, Lagos (DEMO address — replace before any live send)",
+  "unsubscribe_base_url": "http://localhost:5001",
+  "copy_provider": "gemini",
+  "providers": ["gemini", "nvidia"],
+  "demo_mode": false,
+  "lead_source": "csv",
+  "timezone": "Africa/Lagos",
+  "booking": {
+    "enabled": true,
+    "provider": "composio_googlecalendar",
+    "default_duration_min": 30,
+    "action_slug": "GOOGLECALENDAR_CREATE_EVENT"
+  },
+  "sending": {
+    "mode": "controlled",
+    "controlled_inbox_env": "SMTP_USER",
+    "daily_global_cap": 50,
+    "throttle_seconds": { "min": 3, "max": 6 },
+    "mailboxes": [
+      {
+        "smtp_host": "smtp.gmail.com",
+        "smtp_port": 587,
+        "user_env": "SMTP_USER",
+        "pass_env": "SMTP_PASS",
+        "daily_cap": 40
+      }
+    ]
+  }
+}
