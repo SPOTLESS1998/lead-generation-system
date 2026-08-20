@@ -4,6 +4,8 @@ warnings.filterwarnings('ignore')
 import os
 import sys
 import time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -60,22 +62,31 @@ def draft_reply(cfg, reply, intent):
     """Draft the outbound reply. For 'interested', also propose a meeting."""
     tz = cfg.get("timezone", "UTC")
     default_dur = int(cfg.get("booking", {}).get("default_duration_min", 30))
+    # Anchor the model to the real current date in the client's timezone — without
+    # this it invents a date (and picked one two years in the past in testing).
+    try:
+        today = datetime.now(ZoneInfo(tz))
+    except Exception:
+        today = datetime.now()
+    today_str = today.strftime("%A, %Y-%m-%d")  # e.g. "Thursday, 2026-08-20"
     if intent == "interested":
         schema = ('{{"reply_body": "<the email reply>", '
                   '"meeting_title": "<short calendar title>", '
                   '"proposed_start_local": "YYYY-MM-DD HH:MM", '
                   '"duration_min": %d}}' % default_dur)
         extra = (f"The prospect is interested. Propose ONE specific meeting time 2-4 business "
-                 f"days out during business hours in the {tz} timezone, and mention that time in "
-                 f"the reply. Keep it warm, concise (<120 words), human, no buzzwords.")
+                 f"days AFTER today, on a real future calendar date (never today or a past date), "
+                 f"during business hours in the {tz} timezone, and mention that day and time in "
+                 f"the reply. proposed_start_local MUST be a date strictly after {today_str}. "
+                 f"Keep it warm, concise (<120 words), human, no buzzwords.")
     else:
         schema = '{"reply_body": "<the email reply>"}'
         extra = ("Write a helpful, concise (<120 words), human reply that addresses their "
                  "message and gently moves toward a short intro call. No buzzwords.")
     prompt = f"""
-You are a friendly SDR for '{cfg['client_name']}'. Write a reply to this prospect
-message. Sign off as '{cfg.get('from_name') or cfg['client_name']}'. Do not include
-a Subject line. {extra}
+You are a friendly SDR for '{cfg['client_name']}'. Today's date is {today_str} ({tz}).
+Write a reply to this prospect message. Sign off as
+'{cfg.get('from_name') or cfg['client_name']}'. Do not include a Subject line. {extra}
 
 Deliverability: use plain, natural language. Avoid spam-trigger words (free money,
 guarantee, act now, limited time, click here, urgent), no ALL-CAPS words, at most one
@@ -91,6 +102,32 @@ Reply with ONLY a JSON object, no prose:
 """
     obj, provider = generate_json(cfg, prompt)
     return obj, provider
+
+
+def _safe_future_slot(proposed, tz, min_days=2, hour=11):
+    """Return a valid 'YYYY-MM-DD HH:MM' that is strictly in the future.
+
+    The model can still propose a past or unparseable date despite the prompt;
+    never let that reach the calendar. Keeps a good proposal as-is, otherwise
+    falls back to `min_days` days out at `hour`:00 local, skipping weekends.
+    """
+    try:
+        now = datetime.now(ZoneInfo(tz))
+    except Exception:
+        now = datetime.now()
+    if proposed:
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M"):
+            try:
+                dt = datetime.strptime(proposed.strip(), fmt).replace(tzinfo=now.tzinfo)
+                if dt > now:
+                    return dt.strftime("%Y-%m-%d %H:%M")
+                break
+            except ValueError:
+                continue
+    dt = (now + timedelta(days=min_days)).replace(hour=hour, minute=0, second=0, microsecond=0)
+    while dt.weekday() >= 5:  # nudge Sat/Sun → Monday
+        dt += timedelta(days=1)
+    return dt.strftime("%Y-%m-%d %H:%M")
 
 
 # --------------------------------------------------------------------------
@@ -203,7 +240,8 @@ def main():
             if intent == "interested":
                 entry["meeting"] = {
                     "title": (draft.get("meeting_title") or f"Intro call — {cfg['client_name']}"),
-                    "start_local": draft.get("proposed_start_local"),
+                    "start_local": _safe_future_slot(draft.get("proposed_start_local"),
+                                                     cfg.get("timezone", "UTC")),
                     "duration_min": int(draft.get("duration_min")
                                         or cfg.get("booking", {}).get("default_duration_min", 30)),
                     "attendee_email": lead_email,
