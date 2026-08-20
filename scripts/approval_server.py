@@ -3,6 +3,7 @@ warnings.filterwarnings('ignore')
 
 import os
 import sys
+import html
 import logging
 
 from flask import Flask
@@ -38,6 +39,91 @@ def page(title, body, emoji="✅"):
 
 # --- routes ----------------------------------------------------------------
 # The pending-draft queue lives in core.review (shared by both agents).
+
+# Spam-badge palette — mirrors the readout in core/review.py.
+_SPAM_BADGE = {
+    "ok":   ("#e8f5e9", "#2e7d32", "✅ Spam: clean"),
+    "warn": ("#fff8e1", "#ef6c00", "⚠️ Spam: minor"),
+    "high": ("#ffebee", "#c62828", "🚫 Spam: high risk"),
+}
+
+
+def _card(lead_id, entry):
+    """One pending draft rendered as an approve/decline card (all text escaped)."""
+    kind = entry.get("kind", "cold")
+    company = html.escape(entry.get("company_name") or entry.get("target_email") or "prospect")
+    name = html.escape(f'{entry.get("first_name","")} {entry.get("last_name","")}'.strip())
+    title = html.escape(entry.get("title", ""))
+    subject = html.escape(entry.get("drafted_subject", ""))
+    body = html.escape(entry.get("drafted_body", "")).replace("\n", "<br>")
+    who_line = " · ".join(x for x in [name, title] if x)
+
+    spam = entry.get("spam") or {}
+    bg, fg, label = _SPAM_BADGE.get(spam.get("level", "ok"), _SPAM_BADGE["ok"])
+    badge = (f'<span style="background:{bg};color:{fg};padding:4px 10px;border-radius:12px;'
+             f'font-size:12px;font-weight:bold;">{label} ({spam.get("score", 0)})</span>')
+
+    kind_bg, kind_label = (("#ede7f6", "↩ REPLY") if kind == "reply" else ("#e3f2fd", "✉ COLD"))
+    kind_badge = (f'<span style="background:{kind_bg};color:#333;padding:4px 10px;'
+                  f'border-radius:12px;font-size:12px;font-weight:bold;">{kind_label}</span>')
+
+    magnet = ""
+    if entry.get("magnet_url"):
+        magnet = (f'<a href="{html.escape(entry["magnet_url"])}" target="_blank" '
+                  f'style="color:#0056b3;font-size:14px;">🎁 View their personalized page →</a>')
+
+    return f"""
+    <div style="background:white;border:1px solid #e0e0e0;border-radius:10px;padding:22px;
+                margin-bottom:20px;box-shadow:0 2px 6px rgba(0,0,0,0.06);text-align:left;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <h2 style="margin:0;color:#2c3e50;font-size:20px;">{company}</h2>
+        <div>{kind_badge} &nbsp; {badge}</div>
+      </div>
+      <p style="margin:0 0 14px;color:#666;font-size:14px;">{who_line}</p>
+      <div style="background:#f1f8e9;border-left:4px solid #4CAF50;padding:14px;border-radius:4px;margin-bottom:14px;">
+        <strong>Subject:</strong> {subject}<br><br>{body}
+      </div>
+      <p style="margin:0 0 18px;">{magnet}</p>
+      <a href="/approve/{lead_id}" style="background:#4CAF50;color:white;padding:12px 26px;
+         text-decoration:none;border-radius:6px;font-weight:bold;margin-right:12px;">✅ Approve &amp; Send</a>
+      <a href="/decline/{lead_id}" style="background:#f44336;color:white;padding:12px 26px;
+         text-decoration:none;border-radius:6px;font-weight:bold;">❌ Decline</a>
+    </div>"""
+
+
+@app.route('/')
+def dashboard():
+    """Home screen: every pending draft for the active client, ready to approve."""
+    client = config.active_client()
+    try:
+        cfg = get_cfg(client)
+        client_label = html.escape(cfg.get("client_name", client))
+    except Exception:
+        client_label = html.escape(client)
+
+    leads = review.load_pending()
+    pending = [(lid, e) for lid, e in leads.items()
+               if e.get("client") == client and e.get("status") == "pending"]
+
+    if pending:
+        cards = "".join(_card(lid, e) for lid, e in pending)
+        count_line = f"{len(pending)} draft{'s' if len(pending) != 1 else ''} waiting for your approval"
+    else:
+        cards = ('<div style="background:white;border-radius:10px;padding:50px;color:#999;">'
+                 'No drafts waiting. Run <code>lead_agent.py</code> or <code>reply_agent.py</code> '
+                 'to queue some.</div>')
+        count_line = "Nothing pending right now"
+
+    return f"""<html><head><title>{client_label} — Approvals</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1"></head>
+    <body style="font-family:Arial,sans-serif;background:#f4f7f6;margin:0;padding:0;color:#333;">
+      <div style="max-width:760px;margin:0 auto;padding:40px 20px;">
+        <h1 style="color:#2c3e50;margin-bottom:4px;">📋 {client_label} — Approval Queue</h1>
+        <p style="color:#777;margin-top:0;margin-bottom:30px;">{count_line}.</p>
+        {cards}
+      </div>
+    </body></html>""", 200
+
 
 @app.route('/approve/<lead_id>')
 def approve(lead_id):

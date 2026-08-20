@@ -33,6 +33,36 @@ def _nl2br(text):
     return html.escape(text).replace("\n", "<br>")
 
 
+def smtp_deliver(host, port, user, password, from_addr, to_addr, msg_string,
+                 retries=3, backoff=2.0):
+    """Put one message on the wire, retrying transient failures.
+
+    Gmail's SMTP occasionally drops the TLS session mid-handshake
+    ("EOF occurred in violation of protocol"); a fresh connection on the next
+    attempt almost always succeeds. Each attempt opens — and always closes — its
+    own connection. Raises the last exception only if every attempt fails.
+    """
+    last = None
+    for attempt in range(1, retries + 1):
+        try:
+            server = smtplib.SMTP(host, port, timeout=30)
+            try:
+                server.starttls()
+                server.login(user, password)
+                server.sendmail(from_addr, to_addr, msg_string)
+            finally:
+                try:
+                    server.quit()
+                except Exception:
+                    pass
+            return
+        except Exception as e:
+            last = e
+            if attempt < retries:
+                time.sleep(backoff * attempt)
+    raise last
+
+
 class SendingPool:
     def __init__(self, client_cfg):
         self.cfg = client_cfg
@@ -140,11 +170,9 @@ class SendingPool:
         msg.attach(MIMEText(html_body, "html", "utf-8"))
 
         try:
-            server = smtplib.SMTP(mailbox["smtp_host"], mailbox["smtp_port"], timeout=30)
-            server.starttls()
-            server.login(mailbox["user"], mailbox["password"])
-            server.sendmail(mailbox["address"], actual_to, msg.as_string())
-            server.quit()
+            smtp_deliver(mailbox["smtp_host"], mailbox["smtp_port"],
+                         mailbox["user"], mailbox["password"],
+                         mailbox["address"], actual_to, msg.as_string())
         except Exception as e:
             raise SendError(str(e))
 

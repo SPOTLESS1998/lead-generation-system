@@ -16,11 +16,10 @@ import os
 import html
 import json
 import uuid
-import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-from . import config, spam
+from . import config, spam, sender
 
 PENDING_FILE = os.path.join(config.ROOT, "pending_leads.json")
 
@@ -181,11 +180,8 @@ def notify_operator(cfg, lead_id, entry):
         msg.attach(MIMEText("Please view this email in an HTML compatible client.", "plain"))
         msg.attach(MIMEText(html_content, "html"))
 
-        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=30)
-        server.starttls()
-        server.login(smtp_user, smtp_pass)
-        server.sendmail(smtp_user, smtp_user, msg.as_string())
-        server.quit()
+        sender.smtp_deliver("smtp.gmail.com", 587, smtp_user, smtp_pass,
+                            smtp_user, smtp_user, msg.as_string())
         print(f"✅ Approval request sent to your inbox ({who}).")
         return True
     except Exception as e:
