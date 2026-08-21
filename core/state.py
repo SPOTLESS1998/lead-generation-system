@@ -7,6 +7,7 @@ Tables:
   suppression — never-contact list (unsubscribes, bounces, manual)
   replies     — one row per inbound reply we processed (dedup on Message-ID)
   bookings    — meetings booked off an interested reply
+  reminders   — which pre-meeting reminders (60/30/15 min) have already fired
 
 WAL mode is enabled so the agent and the Flask approval server can both touch
 the same DB safely. connect() runs a tiny idempotent migration so DBs created
@@ -78,6 +79,15 @@ CREATE TABLE IF NOT EXISTS bookings (
     event_id   TEXT,
     starts_at  TEXT,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS reminders (
+    id         INTEGER PRIMARY KEY,
+    client     TEXT NOT NULL,
+    booking_id INTEGER NOT NULL,   -- the bookings.id this reminder is for
+    minutes    INTEGER NOT NULL,   -- which lead-time fired: 60 | 30 | 15
+    sent_at    TEXT NOT NULL,
+    UNIQUE(client, booking_id, minutes)   -- each reminder fires exactly once
 );
 
 CREATE TABLE IF NOT EXISTS magnets (
@@ -265,6 +275,53 @@ def latest_booking(conn, client, email):
         "WHERE client=? AND lead_email=? ORDER BY created_at DESC LIMIT 1",
         (client, email),
     ).fetchone()
+
+
+# --- appointments & reminders (Tier 2.5) -----------------------------------
+
+def list_appointments(conn, client):
+    """The curated appointments list: every booking joined to its lead.
+
+    Each row carries the booking (id, event_id, starts_at) plus the prospect's
+    identity and the service we're about to render them (leads.niche) — name,
+    company, title, contact email. LEFT JOIN so a booking still shows even if the
+    leads row were somehow missing. Ordered by starts_at ASC (soonest first).
+
+    Filtering to only-upcoming is left to the caller: starts_at is naive-LOCAL
+    text, so "is it in the future?" can only be judged by someone holding the
+    client's timezone (the agent and the dashboard both do — see core/reminders
+    .parse_start). We return every row and let them decide.
+    """
+    return conn.execute(
+        """SELECT b.id, b.event_id, b.starts_at, b.created_at, b.lead_email,
+                  l.first_name, l.last_name, l.company_name, l.title,
+                  l.niche AS service
+             FROM bookings b
+             LEFT JOIN leads l
+               ON l.client = b.client AND l.email = b.lead_email
+            WHERE b.client = ?
+            ORDER BY b.starts_at ASC""",
+        (client,),
+    ).fetchall()
+
+
+def reminder_sent(conn, client, booking_id, minutes):
+    """True if the `minutes`-before reminder for this booking has already fired."""
+    row = conn.execute(
+        "SELECT 1 FROM reminders WHERE client=? AND booking_id=? AND minutes=?",
+        (client, booking_id, minutes),
+    ).fetchone()
+    return row is not None
+
+
+def record_reminder(conn, client, booking_id, minutes):
+    """Mark a reminder as sent (idempotent via the UNIQUE constraint)."""
+    conn.execute(
+        "INSERT OR IGNORE INTO reminders (client, booking_id, minutes, sent_at) "
+        "VALUES (?, ?, ?, ?)",
+        (client, booking_id, minutes, _now()),
+    )
+    conn.commit()
 
 
 # --- magnets (personalized lead-magnet pages) ------------------------------
