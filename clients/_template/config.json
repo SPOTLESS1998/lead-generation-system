@@ -13,7 +13,15 @@
     "enabled": true,
     "provider": "composio_googlecalendar",
     "default_duration_min": 30,
+    "default_service": "",
     "action_slug": "GOOGLECALENDAR_CREATE_EVENT"
+  },
+  "reminders": {
+    "enabled": true,
+    "lead_times_min": [60, 30, 15],
+    "poll_seconds": 60,
+    "email": true,
+    "desktop": true
   },
   "sending": {
     "mode": "controlled",

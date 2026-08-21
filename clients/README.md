@@ -34,7 +34,13 @@ in `data/<name>/state.sqlite` (git-ignored, machine-local).
 | `booking.enabled` | `true` = create a real Google Calendar event when an *interested* reply is approved. |
 | `booking.provider` | Booking backend — `composio_googlecalendar` (via the Composio CLI). |
 | `booking.default_duration_min` | Default meeting length in minutes. |
+| `booking.default_service` | Fallback service label when a lead has no `niche` tag (blank → "intro consultation"). |
 | `booking.action_slug` | Composio create-event action (`GOOGLECALENDAR_CREATE_EVENT`). |
+| `reminders.enabled` | `true` = the reminder agent pings you before each booked meeting. `false` = it does nothing. |
+| `reminders.lead_times_min` | Minutes-before to remind, e.g. `[60, 30, 15]`. The most-urgent unsent one fires per pass. |
+| `reminders.poll_seconds` | How often the agent re-checks the appointments list (loop mode). |
+| `reminders.email` | `true` = email your own inbox at each reminder. |
+| `reminders.desktop` | `true` = show a macOS desktop banner at each reminder (best-effort). |
 | `sending.mode` | `"controlled"` = deliver to a safe inbox (demos). `"live"` = deliver to real prospects. |
 | `sending.controlled_inbox_env` | Env var naming the safe inbox for controlled mode. |
 | `sending.daily_global_cap` | Max sends per day across all mailboxes. |
@@ -82,6 +88,29 @@ composio link googlecalendar
 
 Until that's done, approvals still send the reply — the calendar step degrades
 gracefully and just asks you to book manually.
+
+## Appointment reminders (Tier 2.5)
+
+Once a meeting is booked, it lands on a **curated appointments list** — every
+booking joined to its lead, so you see *who* is booked, *for what* (the service =
+the lead's `niche`), *when*, and their *contact*. View it in the browser at
+**`/appointments`** (linked from the top of the approval queue), split into
+Upcoming vs Past, each row showing which of the reminders have fired.
+
+A dedicated **reminder agent** oversees that list and pings you before each call —
+at `60`, `30`, and `15` minutes before (configurable via `reminders.lead_times_min`),
+on **both** an email to your own inbox **and** a macOS desktop banner:
+
+```
+python scripts/reminder_agent.py            # continuous loop (re-checks every reminders.poll_seconds)
+python scripts/reminder_agent.py --once     # a single pass, then exit (for cron/launchd)
+```
+
+Each reminder fires **exactly once** (tracked in the DB), and an agent that was
+offline across several thresholds sends a **single** catch-up ping — never a burst.
+The reminder sentence is AI-composed via the free gateway (FreeLLMAPI → Gemini →
+NVIDIA), with a fixed template fallback if every provider is down. Turn the whole
+thing off per client with `reminders.enabled: false`.
 
 ## leads.csv
 

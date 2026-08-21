@@ -61,6 +61,13 @@
     "default_duration_min": 30,
     "action_slug": "GOOGLECALENDAR_CREATE_EVENT"
   },
+  "reminders": {
+    "enabled": true,
+    "lead_times_min": [60, 30, 15],
+    "poll_seconds": 60,
+    "email": true,
+    "desktop": true
+  },
   "sending": {
     "mode": "controlled",
     "controlled_inbox_env": "SMTP_USER",

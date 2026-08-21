@@ -73,7 +73,15 @@ DEFAULTS = {
         "enabled": True,                      # False = still reply, just don't create a calendar event
         "provider": "composio_googlecalendar",
         "default_duration_min": 30,
+        "default_service": "",                # fallback service label when a lead has no niche tag
         "action_slug": "GOOGLECALENDAR_CREATE_EVENT",
+    },
+    "reminders": {                            # Tier 2.5: pre-meeting reminders to the operator (see scripts/reminder_agent.py)
+        "enabled": True,                      # False = the reminder agent does nothing
+        "lead_times_min": [60, 30, 15],       # minutes-before to remind; most-urgent unsent one fires per pass
+        "poll_seconds": 60,                   # how often the agent re-checks the appointments list
+        "email": True,                        # email the operator's own inbox
+        "desktop": True,                      # show a macOS desktop banner (osascript; best-effort)
     },
     "sending": {
         "mode": "controlled",                # "controlled" (redirect to safe inbox) | "live"

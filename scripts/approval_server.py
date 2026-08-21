@@ -6,12 +6,13 @@ import sys
 import html
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from flask import Flask
 
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core import config, state, sender, suppression, compliance, review, magnet, scheduling
+from core import config, state, sender, suppression, compliance, review, magnet, scheduling, reminders
 from core import calendar as gcal   # core/calendar.py (the booking seam), not stdlib calendar
 
 app = Flask(__name__)
@@ -135,7 +136,8 @@ def dashboard():
     <body style="font-family:Arial,sans-serif;background:#f4f7f6;margin:0;padding:0;color:#333;">
       <div style="max-width:760px;margin:0 auto;padding:40px 20px;">
         <h1 style="color:#2c3e50;margin-bottom:4px;">📋 {client_label} — Approval Queue</h1>
-        <p style="color:#777;margin-top:0;margin-bottom:30px;">{count_line}.</p>
+        <p style="color:#777;margin-top:0;margin-bottom:30px;">{count_line}. &nbsp;·&nbsp;
+           <a href="/appointments" style="color:#0056b3;text-decoration:none;">📅 View booked appointments →</a></p>
         {cards}
       </div>
     </body></html>""", 200
@@ -383,6 +385,110 @@ def not_interested(token):
     return page("No problem — thanks for letting us know",
                 "We won't email you again. Changed your mind? Just reply to our last "
                 "email and we'll pick things up.", "👍"), 200
+
+
+def _reminder_pills(lead_times, sent):
+    """Small pills showing which pre-meeting reminders have fired (green ✓) vs not (grey ○)."""
+    out = []
+    for m in lead_times:
+        done = m in sent
+        bg, fg, mark = ("#e8f5e9", "#2e7d32", "✓") if done else ("#f0f0f0", "#999", "○")
+        out.append(f'<span style="background:{bg};color:{fg};padding:2px 8px;border-radius:10px;'
+                   f'font-size:12px;margin-right:4px;white-space:nowrap;">{m}m {mark}</span>')
+    return "".join(out) or '<span style="color:#bbb;font-size:12px;">—</span>'
+
+
+def _appt_row(item, tz, lead_times):
+    """One appointment as a table row (every field escaped)."""
+    start, r, sent = item
+    name = html.escape(f'{r["first_name"] or ""} {r["last_name"] or ""}'.strip() or r["lead_email"])
+    company = html.escape(r["company_name"] or "")
+    service = html.escape(r["service"] or "—")
+    email = html.escape(r["lead_email"])
+    when = html.escape(_friendly_when(r["starts_at"], tz))
+    who = name + (f'<br><span style="color:#999;font-size:13px;">{company}</span>' if company else "")
+    return (
+        '<tr style="border-bottom:1px solid #eee;">'
+        f'<td style="padding:12px 10px;">{who}</td>'
+        f'<td style="padding:12px 10px;">{service}</td>'
+        f'<td style="padding:12px 10px;white-space:nowrap;">{when}</td>'
+        f'<td style="padding:12px 10px;"><a href="mailto:{email}" style="color:#0056b3;">{email}</a></td>'
+        f'<td style="padding:12px 10px;">{_reminder_pills(lead_times, sent)}</td>'
+        '</tr>'
+    )
+
+
+def _appt_table(title, items, empty_msg, tz, lead_times):
+    if not items:
+        return (f'<h2 style="color:#2c3e50;font-size:18px;margin-top:34px;">{title}</h2>'
+                f'<p style="color:#999;">{empty_msg}</p>')
+    rows = "".join(_appt_row(it, tz, lead_times) for it in items)
+    return (
+        f'<h2 style="color:#2c3e50;font-size:18px;margin-top:34px;">{title}</h2>'
+        '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;background:white;'
+        'border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,0.06);overflow:hidden;">'
+        '<tr style="text-align:left;color:#777;font-size:13px;background:#fafafa;">'
+        '<th style="padding:10px;">Client</th><th style="padding:10px;">Service</th>'
+        '<th style="padding:10px;">When</th><th style="padding:10px;">Contact</th>'
+        '<th style="padding:10px;">Reminders</th></tr>'
+        f'{rows}</table></div>'
+    )
+
+
+@app.route('/appointments')
+def appointments():
+    """The curated booked-appointments list for the active client.
+
+    Every booking joined to its lead — name, the service we're rendering them
+    (leads.niche), the time, and their contact — split into Upcoming vs Past,
+    each row showing which of the 60/30/15-min reminders have already fired.
+    """
+    client = config.active_client()
+    try:
+        cfg = get_cfg(client)
+        client_label = html.escape(cfg.get("client_name", client))
+    except Exception:
+        return page("Config Error", "Could not load the client configuration.", "⚠️"), 500
+
+    tz = cfg.get("timezone", "UTC")
+    lead_times = cfg.get("reminders", {}).get("lead_times_min", [60, 30, 15])
+    try:
+        now = datetime.now(ZoneInfo(tz))
+    except Exception:
+        now = datetime.now(ZoneInfo("UTC"))
+
+    conn = open_conn(cfg)
+    try:
+        upcoming, past = [], []
+        for r in state.list_appointments(conn, client):
+            start = reminders.parse_start(r["starts_at"], tz)
+            sent = [m for m in lead_times if state.reminder_sent(conn, client, r["id"], m)]
+            (upcoming if (start and start > now) else past).append((start, r, sent))
+    finally:
+        conn.close()
+
+    upcoming.sort(key=lambda x: x[0])
+    past.sort(key=lambda x: x[0].isoformat() if x[0] else "", reverse=True)
+
+    total = len(upcoming) + len(past)
+    count_line = (f"{len(upcoming)} upcoming, {len(past)} past" if total
+                  else "No meetings booked yet")
+
+    body = (
+        _appt_table("📅 Upcoming", upcoming,
+                    "No upcoming meetings. When a prospect books, it lands here.", tz, lead_times)
+        + _appt_table("✅ Past", past, "Nothing here yet.", tz, lead_times)
+    )
+    return f"""<html><head><title>{client_label} — Appointments</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1"></head>
+    <body style="font-family:Arial,sans-serif;background:#f4f7f6;margin:0;padding:0;color:#333;">
+      <div style="max-width:900px;margin:0 auto;padding:40px 20px;">
+        <p style="margin:0 0 4px;"><a href="/" style="color:#0056b3;text-decoration:none;">← Approval queue</a></p>
+        <h1 style="color:#2c3e50;margin-bottom:4px;">📅 {client_label} — Booked Appointments</h1>
+        <p style="color:#777;margin-top:0;">{count_line}. The reminder agent pings you before each one.</p>
+        {body}
+      </div>
+    </body></html>""", 200
 
 
 @app.route('/magnet/<client>/<token>')
