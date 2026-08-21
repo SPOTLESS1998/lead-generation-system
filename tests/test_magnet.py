@@ -5,7 +5,7 @@ wiring in scripts/lead_agent.py — with NO network and NO API credits.
 
 Monkeypatches:
   - core.magnet.generate_json   -> canned structured content (+ failure modes)
-  - scripts/lead_agent.generate -> canned email, capturing the built prompt
+  - scripts/lead_agent.generate_json -> canned {subject, body}, capturing the built prompt
 
 Run:  venv/bin/python tests/test_magnet.py
 """
@@ -142,12 +142,14 @@ conn.close()
 captured = {}
 
 
-def fake_generate(cfg, prompt):
+def fake_generate_json(cfg, prompt, retries=1):
+    # generate_copy calls generate_json (the JSON path), NOT generate — so mock
+    # that symbol and return a parsed {subject, body} dict, its real return shape.
     captured["prompt"] = prompt
-    return ("Subject: Idea for Acme\nHi Ada,\nHere is your audit.", "fake")
+    return ({"subject": "Idea for Acme", "body": "Hi Ada,\nHere is your audit."}, "fake")
 
 
-lead_agent.generate = fake_generate
+lead_agent.generate_json = fake_generate_json
 
 subj, body, _ = lead_agent.generate_copy(
     CFG, LEAD, "brief", magnet_url="http://localhost:5001/magnet/acme/tok1")
