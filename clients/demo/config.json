@@ -6,7 +6,7 @@
   "unsubscribe_base_url": "http://localhost:5001",
   "copy_provider": "gemini",
   "providers": ["freellmapi", "gemini", "nvidia"],
-  "freellmapi_model": ["mistral-medium-latest", "command-a-03-2025"],
+  "freellmapi_model": ["mistral-medium-latest", "gpt-4o", "gemini-3-flash-preview", "command-a-03-2025", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"],
   "demo_mode": false,
   "lead_source": "csv",
   "timezone": "Africa/Lagos",
