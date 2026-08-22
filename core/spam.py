@@ -127,8 +127,10 @@ def check(subject, body):
         flags.append({"type": "exclaim",
                       "detail": f"{bangs} exclamation marks — keep at most one"})
 
-    # 5) Insecure (http://) links hurt deliverability + trust.
-    insecure = len(re.findall(r"http://", low))
+    # 5) Insecure (http://) links hurt deliverability + trust. Loopback/localhost
+    #    URLs are local-only (dev/demo previews) and never reach a real inbox, so
+    #    they are exempt — only genuine external http:// links are flagged.
+    insecure = len(re.findall(r"http://(?!localhost[:/]|127\.|0\.0\.0\.0|\[::1\]|::1)", low))
     if insecure:
         score += 2
         flags.append({"type": "insecure-link",
