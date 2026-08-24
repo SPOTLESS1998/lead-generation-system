@@ -11,6 +11,7 @@ Tables:
   magnets     — personalized lead-magnet page content (Tier 3)
   pipeline_events — observability ledger: one row per pipeline step (status,
                 duration, tokens, cost) that powers self-healing + accounting
+  faults      — flagged problems + how they were healed or escalated
 
 WAL mode is enabled so the agent and the Flask approval server can both touch
 the same DB safely. connect() runs a tiny idempotent migration so DBs created
@@ -121,8 +122,26 @@ CREATE TABLE IF NOT EXISTS pipeline_events (
     created_at        TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS faults (
+    id          INTEGER PRIMARY KEY,
+    client      TEXT NOT NULL,
+    event_id    INTEGER,            -- the pipeline_events row that triggered this (if any)
+    run_id      TEXT,
+    kind        TEXT NOT NULL,      -- transient | rate_limit | stall | data | auth | config | unknown
+    step        TEXT NOT NULL,      -- which pipeline step faulted
+    subject     TEXT,               -- the lead/booking the fault concerns
+    detail      TEXT,               -- error text / description
+    status      TEXT NOT NULL DEFAULT 'open',   -- open | healing | resolved | escalated
+    action      TEXT,               -- remediation chosen (from healer.SAFE_ACTIONS)
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    resolution  TEXT,               -- how it ended (what the healer or human did)
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sends_client_mailbox_day ON sends(client, mailbox, sent_at);
 CREATE INDEX IF NOT EXISTS idx_events_client_step ON pipeline_events(client, step, created_at);
+CREATE INDEX IF NOT EXISTS idx_faults_client_status ON faults(client, status);
 """
 
 
@@ -434,3 +453,70 @@ def count_bookings(conn, client):
     return conn.execute(
         "SELECT COUNT(*) AS c FROM bookings WHERE client=?", (client,)
     ).fetchone()["c"]
+
+
+# --- faults (self-healing ledger, see core/healer.py) ----------------------
+
+def record_fault(conn, client, kind, step, subject, detail, event_id=None, run_id=None):
+    """Open a fault, idempotently. If an open/healing fault already exists for this
+    (client, step, subject), return its id instead of creating a duplicate — so a
+    step that keeps failing produces ONE fault the healer works, not a pile."""
+    existing = conn.execute(
+        "SELECT id FROM faults WHERE client=? AND step=? "
+        "AND COALESCE(subject,'')=COALESCE(?, '') AND status IN ('open','healing') "
+        "ORDER BY id DESC LIMIT 1",
+        (client, step, subject),
+    ).fetchone()
+    if existing:
+        return existing["id"]
+    cur = conn.execute(
+        "INSERT INTO faults (client, event_id, run_id, kind, step, subject, detail, "
+        "status, attempts, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'open', 0, ?, ?)",
+        (client, event_id, run_id, kind, step, subject, detail, _now(), _now()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_fault(conn, fault_id, status=None, action=None, attempts=None,
+                 resolution=None, kind=None):
+    """Patch the mutable fields of a fault; always bumps updated_at."""
+    sets, params = [], []
+    for col, val in (("status", status), ("action", action), ("attempts", attempts),
+                     ("resolution", resolution), ("kind", kind)):
+        if val is not None:
+            sets.append(f"{col}=?")
+            params.append(val)
+    sets.append("updated_at=?")
+    params.append(_now())
+    params.append(fault_id)
+    conn.execute(f"UPDATE faults SET {', '.join(sets)} WHERE id=?", params)
+    conn.commit()
+
+
+def resolve_fault(conn, fault_id, resolution="recovered"):
+    """Mark a fault resolved (e.g. the observer saw the step succeed afterwards)."""
+    update_fault(conn, fault_id, status="resolved", resolution=resolution)
+
+
+def get_fault(conn, fault_id):
+    return conn.execute("SELECT * FROM faults WHERE id=?", (fault_id,)).fetchone()
+
+
+def open_faults(conn, client, limit=50):
+    """Faults still needing attention (open or mid-heal), oldest first."""
+    return conn.execute(
+        "SELECT * FROM faults WHERE client=? AND status IN ('open','healing') "
+        "ORDER BY id ASC LIMIT ?",
+        (client, limit),
+    ).fetchall()
+
+
+def fault_counts(conn, client):
+    """{status: count} across all faults for a client (for the dashboard)."""
+    rows = conn.execute(
+        "SELECT status, COUNT(*) AS c FROM faults WHERE client=? GROUP BY status",
+        (client,),
+    ).fetchall()
+    return {r["status"]: r["c"] for r in rows}
