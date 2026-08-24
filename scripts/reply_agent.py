@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import config, state, suppression, review, inbox, scheduling
+from core import observability as obs
 from core.ai import generate_json
 
 # The intents the classifier may assign. Anything else is treated as "question"
@@ -142,6 +143,7 @@ def main():
     print("=========================================================")
 
     conn = state.connect(cfg["paths"]["db"])
+    run_id = obs.new_run_id()   # groups every event this run emits in the ledger
     processed = 0
 
     for mailbox in cfg["sending"]["mailboxes"]:
@@ -171,7 +173,8 @@ def main():
 
             # Classify (safe default = 'question' → human review, never auto-suppress).
             try:
-                intent, meta, provider = classify_reply(cfg, r)
+                with obs.track(conn, cfg, "classify_reply", subject=lead_email, run_id=run_id):
+                    intent, meta, provider = classify_reply(cfg, r)
             except Exception as e:
                 print(f"   ⚠️  Classification failed ({e}); routing to human as 'question'.")
                 intent, meta, provider = "question", {}, "none"
@@ -193,7 +196,8 @@ def main():
 
             # interested / question / objection → draft a reply for 1-click approval.
             try:
-                draft, dprovider = draft_reply(cfg, r, intent)
+                with obs.track(conn, cfg, "reply", subject=lead_email, run_id=run_id):
+                    draft, dprovider = draft_reply(cfg, r, intent)
                 reply_body = (draft.get("reply_body") or "").strip()
             except Exception as e:
                 print(f"      ⚠️  Draft generation failed ({e}); queuing for manual reply.")

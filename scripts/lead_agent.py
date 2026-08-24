@@ -8,6 +8,7 @@ import time
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import config, state, suppression, review, magnet, leads as leads_source
+from core import observability as obs
 from core.ai import generate, generate_json
 
 # Safety valve: how many drafts to prepare in a single run (no point drafting more
@@ -144,6 +145,7 @@ def main():
     print("=========================================================")
 
     conn = state.connect(cfg["paths"]["db"])
+    run_id = obs.new_run_id()   # groups every event this run emits in the ledger
 
     # Lead source is config-selectable: a curated CSV, or live auto-discovery
     # (Google Maps or Yellow Pages → Firecrawl → AI extraction). All return
@@ -204,19 +206,24 @@ def main():
             provider = "demo"
         else:
             try:
-                brief, _ = generate_strategy(cfg, lead)
-                # Build the prospect's real "free gift": a personalized audit page,
-                # stored now so its link resolves the moment the email is approved.
-                try:
-                    content = magnet.build_content(cfg, lead, brief)
-                    magnet_token = magnet.new_token()
-                    state.save_magnet(conn, cfg["client"], magnet_token, lead["email"], content)
-                    magnet_url = magnet.url(cfg, cfg["client"], magnet_token)
-                    print_step(f"🎁 [Magnet] Built personalized audit page → {magnet_url}")
-                except Exception as e:
-                    print(f"   ⚠️  Magnet generation failed ({e}); drafting without a link.")
-                    magnet_url = None
-                subject, body, provider = generate_copy(cfg, lead, brief, magnet_url)
+                # Track the whole draft as one ledger step: both the strategist and
+                # the copywriter LLM calls attribute their tokens/cost here, and a
+                # generation failure is recorded as an 'error' event (then re-raised
+                # into the rollback below — the observer will open a fault for it).
+                with obs.track(conn, cfg, "draft", subject=lead["email"], run_id=run_id):
+                    brief, _ = generate_strategy(cfg, lead)
+                    # Build the prospect's real "free gift": a personalized audit page,
+                    # stored now so its link resolves the moment the email is approved.
+                    try:
+                        content = magnet.build_content(cfg, lead, brief)
+                        magnet_token = magnet.new_token()
+                        state.save_magnet(conn, cfg["client"], magnet_token, lead["email"], content)
+                        magnet_url = magnet.url(cfg, cfg["client"], magnet_token)
+                        print_step(f"🎁 [Magnet] Built personalized audit page → {magnet_url}")
+                    except Exception as e:
+                        print(f"   ⚠️  Magnet generation failed ({e}); drafting without a link.")
+                        magnet_url = None
+                    subject, body, provider = generate_copy(cfg, lead, brief, magnet_url)
             except Exception as e:
                 print(f"   ❌ Generation failed for {lead['company_name']}: {e}. "
                       f"Rolling back so this lead retries on the next run.")

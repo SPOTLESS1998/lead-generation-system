@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(HERE))   # repo root -> `core`
 sys.path.insert(0, HERE)                     # scripts/  -> `lead_agent`
 
 from core import config, state, review, suppression
+from core import observability as obs
 # generate_strategy / generate_copy only build prompts; the provider fallback
 # they call lives in core.ai — so drafting here shares the exact copy path.
 from lead_agent import generate_strategy, generate_copy
@@ -62,6 +63,7 @@ def main():
 
     conn = state.connect(cfg["paths"]["db"])
     client = cfg["client"]
+    run_id = obs.new_run_id()   # groups every event this run emits in the ledger
 
     rows = conn.execute(
         "SELECT email, first_name, last_name, title, company_name, website_url, niche "
@@ -100,8 +102,11 @@ def main():
 
         lead = _draft_lead_view(row)
         try:
-            brief, _ = generate_strategy(cfg, lead)
-            subject, body, provider = generate_copy(cfg, lead, brief)
+            # Meter the re-draft in the ledger just like the first-pass draft in
+            # lead_agent, so retried leads' tokens/cost + any failure are counted.
+            with obs.track(conn, cfg, "draft", subject=row["email"], run_id=run_id):
+                brief, _ = generate_strategy(cfg, lead)
+                subject, body, provider = generate_copy(cfg, lead, brief)
         except Exception as e:
             failed += 1
             print(f"   ❌ Generation failed for {lead['company_name']}: {e}. "
