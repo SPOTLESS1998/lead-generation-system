@@ -8,6 +8,9 @@ Tables:
   replies     — one row per inbound reply we processed (dedup on Message-ID)
   bookings    — meetings booked off an interested reply
   reminders   — which pre-meeting reminders (60/30/15 min) have already fired
+  magnets     — personalized lead-magnet page content (Tier 3)
+  pipeline_events — observability ledger: one row per pipeline step (status,
+                duration, tokens, cost) that powers self-healing + accounting
 
 WAL mode is enabled so the agent and the Flask approval server can both touch
 the same DB safely. connect() runs a tiny idempotent migration so DBs created
@@ -100,7 +103,26 @@ CREATE TABLE IF NOT EXISTS magnets (
     UNIQUE(client, token)
 );
 
+CREATE TABLE IF NOT EXISTS pipeline_events (
+    id                INTEGER PRIMARY KEY,
+    client            TEXT NOT NULL,
+    run_id            TEXT,               -- groups every event from one agent pass/run
+    step              TEXT NOT NULL,      -- discover | draft | send | reply | book | remind | heal | ...
+    subject           TEXT,               -- the thing acted on (lead email, booking id, ...)
+    status            TEXT NOT NULL,      -- ok | error | skipped
+    attempt           INTEGER NOT NULL DEFAULT 1,
+    duration_ms       INTEGER,
+    provider          TEXT,               -- LLM provider that answered this step, if any
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd          REAL NOT NULL DEFAULT 0,
+    error             TEXT,               -- error message when status='error'
+    meta              TEXT,               -- optional JSON blob of extra context
+    created_at        TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sends_client_mailbox_day ON sends(client, mailbox, sent_at);
+CREATE INDEX IF NOT EXISTS idx_events_client_step ON pipeline_events(client, step, created_at);
 """
 
 
@@ -351,3 +373,64 @@ def get_magnet(conn, client, token):
         return json.loads(row["content"])
     except (ValueError, TypeError):
         return None
+
+
+# --- pipeline events (observability ledger, see core/observability.py) ------
+
+def record_event(conn, client, step, status, subject=None, run_id=None, attempt=1,
+                 duration_ms=None, provider=None, prompt_tokens=0, completion_tokens=0,
+                 cost_usd=0.0, error=None, meta=None):
+    """Append one row to the observability ledger — one pipeline step attempt.
+
+    `meta` may be a dict/list (stored as JSON) or a string. This never raises on a
+    bad meta value: observability must not be able to break the pipeline it watches.
+    """
+    if isinstance(meta, (dict, list)):
+        try:
+            meta = json.dumps(meta)
+        except (TypeError, ValueError):
+            meta = None
+    conn.execute(
+        """INSERT INTO pipeline_events
+               (client, run_id, step, subject, status, attempt, duration_ms, provider,
+                prompt_tokens, completion_tokens, cost_usd, error, meta, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (client, run_id, step, subject, status, int(attempt), duration_ms, provider,
+         int(prompt_tokens or 0), int(completion_tokens or 0), float(cost_usd or 0.0),
+         error, meta, _now()),
+    )
+    conn.commit()
+
+
+def list_events(conn, client, since=None, step=None, status=None, limit=None):
+    """Ledger rows for a client, newest first. `since` is an ISO-timestamp lower bound."""
+    sql = "SELECT * FROM pipeline_events WHERE client=?"
+    params = [client]
+    if since:
+        sql += " AND created_at >= ?"
+        params.append(since)
+    if step:
+        sql += " AND step=?"
+        params.append(step)
+    if status:
+        sql += " AND status=?"
+        params.append(status)
+    sql += " ORDER BY created_at DESC, id DESC"
+    if limit:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return conn.execute(sql, params).fetchall()
+
+
+def count_leads(conn, client):
+    """Total leads on record for a client (denominator for cost-per-lead)."""
+    return conn.execute(
+        "SELECT COUNT(*) AS c FROM leads WHERE client=?", (client,)
+    ).fetchone()["c"]
+
+
+def count_bookings(conn, client):
+    """Total booked meetings for a client (denominator for cost-per-meeting)."""
+    return conn.execute(
+        "SELECT COUNT(*) AS c FROM bookings WHERE client=?", (client,)
+    ).fetchone()["c"]

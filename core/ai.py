@@ -16,8 +16,64 @@ share exactly one code path.
 import os
 import json
 import time
+import threading
 
 import requests
+
+
+# --- per-thread token accounting -------------------------------------------
+# observability.track() resets this when a pipeline step begins and collects it
+# when the step ends, so the tokens attributed to a step are exactly those spent
+# by generate()/generate_json() inside it — with no change at the call sites.
+# Thread-local so the multi-threaded Flask approval server never mixes two
+# requests' token counts.
+_local = threading.local()
+
+
+def _zero_usage():
+    return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+            "calls": 0, "provider": None}
+
+
+def _usage_store():
+    u = getattr(_local, "usage", None)
+    if u is None:
+        u = _zero_usage()
+        _local.usage = u
+    return u
+
+
+def reset_usage():
+    """Zero the calling thread's token accumulator (call at the start of a step)."""
+    _local.usage = _zero_usage()
+
+
+def collect_usage():
+    """Snapshot the calling thread's token usage accumulated since the last reset."""
+    return dict(_usage_store())
+
+
+def _accumulate(provider, usage):
+    """Fold one provider call's token usage into the thread accumulator."""
+    u = _usage_store()
+    pt = int((usage or {}).get("prompt_tokens") or 0)
+    ct = int((usage or {}).get("completion_tokens") or 0)
+    tt = int((usage or {}).get("total_tokens") or 0) or (pt + ct)
+    u["prompt_tokens"] += pt
+    u["completion_tokens"] += ct
+    u["total_tokens"] += tt
+    u["calls"] += 1
+    u["provider"] = provider   # the provider that actually answered
+
+
+def _norm_usage(u):
+    """Normalize an OpenAI-style usage dict to our three token keys."""
+    u = u or {}
+    return {
+        "prompt_tokens": int(u.get("prompt_tokens") or 0),
+        "completion_tokens": int(u.get("completion_tokens") or 0),
+        "total_tokens": int(u.get("total_tokens") or 0),
+    }
 
 
 def _freellmapi_chat(cfg, prompt, temperature=0.4, max_tokens=800):
@@ -67,10 +123,11 @@ def _freellmapi_chat(cfg, prompt, temperature=0.4, max_tokens=800):
             )
             if resp.status_code != 200:
                 raise RuntimeError(f"FreeLLMAPI {resp.status_code}: {resp.text[:200]}")
-            content = (resp.json()["choices"][0]["message"].get("content") or "").strip()
+            data = resp.json()
+            content = (data["choices"][0]["message"].get("content") or "").strip()
             if not content:
                 raise RuntimeError("FreeLLMAPI returned empty content")
-            return content
+            return content, _norm_usage(data.get("usage"))
         except Exception as e:
             last_err = e
             if i < attempts - 1:
@@ -88,7 +145,14 @@ def _gemini_chat(cfg, prompt):
     text = (getattr(resp, "text", None) or "").strip()
     if not text:
         raise RuntimeError("Gemini returned empty text")
-    return text
+    # Gemini reports tokens on resp.usage_metadata (different key names than OpenAI).
+    um = getattr(resp, "usage_metadata", None)
+    usage = {
+        "prompt_tokens": int(getattr(um, "prompt_token_count", 0) or 0),
+        "completion_tokens": int(getattr(um, "candidates_token_count", 0) or 0),
+        "total_tokens": int(getattr(um, "total_token_count", 0) or 0),
+    } if um is not None else {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    return text, usage
 
 
 def _nvidia_chat(cfg, prompt, temperature=0.4, max_tokens=400):
@@ -108,7 +172,8 @@ def _nvidia_chat(cfg, prompt, temperature=0.4, max_tokens=400):
     )
     if resp.status_code != 200:
         raise RuntimeError(f"NVIDIA API {resp.status_code}: {resp.text[:200]}")
-    return resp.json()["choices"][0]["message"]["content"].strip()
+    data = resp.json()
+    return data["choices"][0]["message"]["content"].strip(), _norm_usage(data.get("usage"))
 
 
 # Every provider is callable as fn(cfg, prompt); each raises if its creds are
@@ -147,12 +212,31 @@ def generate(cfg, prompt):
     last_err = None
     for provider in _provider_order(cfg):
         try:
-            text = _PROVIDER_FUNCS[provider](cfg, prompt)
+            text, usage = _PROVIDER_FUNCS[provider](cfg, prompt)
+            _accumulate(provider, usage)
             return text, provider
         except Exception as e:
             last_err = e
             print(f"⚠️  {provider} generation failed ({e}); trying next provider...")
     raise RuntimeError(f"All providers failed. Last error: {last_err}")
+
+
+def generate_metered(cfg, prompt):
+    """Like generate(), but also return the token usage spent by THIS call.
+
+    Returns (text, provider, usage) where usage = {prompt_tokens, completion_tokens,
+    total_tokens}. Computed as a delta around the thread accumulator, so it composes
+    safely inside an observability.track() block (it does NOT reset the accumulator).
+    """
+    before = collect_usage()
+    text, provider = generate(cfg, prompt)
+    after = collect_usage()
+    usage = {
+        "prompt_tokens": after["prompt_tokens"] - before["prompt_tokens"],
+        "completion_tokens": after["completion_tokens"] - before["completion_tokens"],
+        "total_tokens": after["total_tokens"] - before["total_tokens"],
+    }
+    return text, provider, usage
 
 
 def _extract_json(text):

@@ -83,6 +83,21 @@ DEFAULTS = {
         "email": True,                        # email the operator's own inbox
         "desktop": True,                      # show a macOS desktop banner (osascript; best-effort)
     },
+    "observability": {                        # self-healing + accounting ledger (see core/observability.py)
+        "enabled": True,                      # False = pipeline still runs, just isn't tracked
+        "poll_seconds": 60,                   # how often the observer agent scans the ledger
+        "stall_minutes": {                    # a lead stuck in a state longer than this => a stall to heal
+            "queued": 120,                    # queued but never sent
+            "replied": 240,                   # replied but not yet actioned
+        },
+        "max_heal_attempts": 3,               # tries before the healer escalates to a human
+        "escalate_email": True,               # email the operator when a fault can't be auto-healed
+        "cost": {                             # NOTIONAL pricing model (real providers are free)
+            "rate_per_million_input": 0.0,    # $ per 1M input tokens at your chosen reference rate
+            "rate_per_million_output": 0.0,   # $ per 1M output tokens at your chosen reference rate
+            "margin_multiplier": 1.0,         # markup applied to reference cost => client price
+        },
+    },
     "sending": {
         "mode": "controlled",                # "controlled" (redirect to safe inbox) | "live"
         "controlled_inbox_env": "SMTP_USER", # where sends go in controlled mode
