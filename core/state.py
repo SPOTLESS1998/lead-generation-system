@@ -139,6 +139,12 @@ CREATE TABLE IF NOT EXISTS faults (
     updated_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS observer_state (
+    client        TEXT PRIMARY KEY,  -- one cursor row per client
+    last_event_id INTEGER NOT NULL DEFAULT 0,  -- highest pipeline_events.id already scanned
+    updated_at    TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sends_client_mailbox_day ON sends(client, mailbox, sent_at);
 CREATE INDEX IF NOT EXISTS idx_events_client_step ON pipeline_events(client, step, created_at);
 CREATE INDEX IF NOT EXISTS idx_faults_client_status ON faults(client, status);
@@ -520,3 +526,76 @@ def fault_counts(conn, client):
         (client,),
     ).fetchall()
     return {r["status"]: r["c"] for r in rows}
+
+
+# --- observer cursor + scan queries (see scripts/observer_agent.py) ---------
+
+def max_event_id(conn, client):
+    """Highest pipeline_events.id for a client (0 if none). Used to seed the
+    observer's watermark so a fresh observer ignores the historical backlog and
+    only reacts to problems that happen once it's watching."""
+    row = conn.execute(
+        "SELECT MAX(id) AS m FROM pipeline_events WHERE client=?", (client,)
+    ).fetchone()
+    return row["m"] or 0
+
+
+def get_observer_watermark(conn, client):
+    """The highest event id the observer has already scanned, or None if it has
+    never run for this client (caller seeds it on first run)."""
+    row = conn.execute(
+        "SELECT last_event_id FROM observer_state WHERE client=?", (client,)
+    ).fetchone()
+    return row["last_event_id"] if row else None
+
+
+def set_observer_watermark(conn, client, event_id):
+    """Advance (upsert) the observer's scan cursor."""
+    conn.execute(
+        """INSERT INTO observer_state (client, last_event_id, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(client) DO UPDATE SET last_event_id=excluded.last_event_id,
+                                             updated_at=excluded.updated_at""",
+        (client, int(event_id), _now()),
+    )
+    conn.commit()
+
+
+def unscanned_error_events(conn, client, after_id, limit=200):
+    """Error events newer than the watermark, oldest first — the observer's fault
+    feed. Bounded by `after_id` so an event is never re-reacted to once scanned."""
+    return conn.execute(
+        "SELECT * FROM pipeline_events WHERE client=? AND status='error' AND id > ? "
+        "ORDER BY id ASC LIMIT ?",
+        (client, int(after_id), int(limit)),
+    ).fetchall()
+
+
+def has_ok_event_since(conn, client, step, subject, since_iso):
+    """True if a later successful ('ok') event for this step+subject exists — i.e.
+    the thing that faulted has since worked, so an open fault can be resolved."""
+    if subject is None:
+        row = conn.execute(
+            "SELECT 1 FROM pipeline_events WHERE client=? AND step=? AND subject IS NULL "
+            "AND status='ok' AND created_at > ? LIMIT 1",
+            (client, step, since_iso),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT 1 FROM pipeline_events WHERE client=? AND step=? AND subject=? "
+            "AND status='ok' AND created_at > ? LIMIT 1",
+            (client, step, subject, since_iso),
+        ).fetchone()
+    return row is not None
+
+
+def stalled_leads(conn, client, status, cutoff_iso, limit=200):
+    """Leads sitting in `status` since before `cutoff_iso` — a stall the observer
+    flags. Age is measured from leads.created_at: unambiguous for the primary
+    'queued but never sent' case (a queued lead older than the threshold means the
+    drafting/sending pipeline never picked it up — e.g. a dead cron)."""
+    return conn.execute(
+        "SELECT * FROM leads WHERE client=? AND status=? AND created_at <= ? "
+        "ORDER BY created_at ASC LIMIT ?",
+        (client, status, cutoff_iso, int(limit)),
+    ).fetchall()
