@@ -150,8 +150,11 @@ def _desktop_notify(title, message):
     fails, we just return False and the email still carried the reminder."""
     try:
         # json.dumps → a safely-quoted AppleScript string literal (escapes " and \).
-        script = (f'display notification {json.dumps(message)} '
-                  f'with title {json.dumps(title)} sound name "Glass"')
+        # ensure_ascii=False is REQUIRED: the title/message carry non-ASCII (⏰, —,
+        # accented prospect names), and AppleScript cannot parse \uXXXX escapes — the
+        # default ascii-escaping makes osascript fail with a syntax error and no banner.
+        script = (f'display notification {json.dumps(message, ensure_ascii=False)} '
+                  f'with title {json.dumps(title, ensure_ascii=False)} sound name "Glass"')
         result = subprocess.run(["osascript", "-e", script], check=False, timeout=5,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return result.returncode == 0
