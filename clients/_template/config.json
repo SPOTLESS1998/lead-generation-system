@@ -23,6 +23,21 @@
     "email": true,
     "desktop": true
   },
+  "observability": {
+    "enabled": true,
+    "poll_seconds": 60,
+    "stall_minutes": {
+      "queued": 120,
+      "replied": 240
+    },
+    "max_heal_attempts": 3,
+    "escalate_email": true,
+    "cost": {
+      "rate_per_million_input": 0.0,
+      "rate_per_million_output": 0.0,
+      "margin_multiplier": 1.0
+    }
+  },
   "sending": {
     "mode": "controlled",
     "controlled_inbox_env": "SMTP_USER",

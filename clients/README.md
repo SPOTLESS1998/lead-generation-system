@@ -41,6 +41,12 @@ in `data/<name>/state.sqlite` (git-ignored, machine-local).
 | `reminders.poll_seconds` | How often the agent re-checks the appointments list (loop mode). |
 | `reminders.email` | `true` = email your own inbox at each reminder. |
 | `reminders.desktop` | `true` = show a macOS desktop banner at each reminder (best-effort). |
+| `observability.enabled` | `true` = the observer agent scans the ledger and heals faults. `false` = the pipeline still runs and is still metered, just not watched. |
+| `observability.poll_seconds` | How often the observer re-scans the ledger (loop mode). |
+| `observability.stall_minutes` | Per-status age thresholds, e.g. `{"queued":120}` — a lead stuck longer becomes a stall to heal. |
+| `observability.max_heal_attempts` | Tries before the healer escalates a fault to you. |
+| `observability.escalate_email` | `true` = email your own inbox when a fault can't be auto-healed. |
+| `observability.cost` | Notional pricing model: `rate_per_million_input`/`_output` (reference $/1M tokens) × `margin_multiplier`. Zeros = count tokens only. |
 | `sending.mode` | `"controlled"` = deliver to a safe inbox (demos). `"live"` = deliver to real prospects. |
 | `sending.controlled_inbox_env` | Env var naming the safe inbox for controlled mode. |
 | `sending.daily_global_cap` | Max sends per day across all mailboxes. |
@@ -111,6 +117,37 @@ offline across several thresholds sends a **single** catch-up ping — never a b
 The reminder sentence is AI-composed via the free gateway (FreeLLMAPI → Gemini →
 NVIDIA), with a fixed template fallback if every provider is down. Turn the whole
 thing off per client with `reminders.enabled: false`.
+
+## Observability & self-healing (Tier 3)
+
+Every AI/send step in the pipeline is wrapped in an **accounting ledger**: each run
+records status (ok / error / skipped), wall-clock time, the LLM provider, token
+counts, and a **notional cost**. See it in the browser at **`/health`** (linked from
+the top of the approval queue) — throughput, error rate, token spend, unit economics
+(cost per lead / per booked meeting), a live fault list, and a per-step breakdown.
+
+A dedicated **observer agent** watches that ledger and closes the loop:
+
+```
+python scripts/observer_agent.py            # continuous loop (re-scans every observability.poll_seconds)
+python scripts/observer_agent.py --once     # a single pass, then exit (for cron/launchd)
+```
+
+- **Flag** — new error events (past a persisted watermark, so each is reacted to once)
+  and **stalled** leads (stuck in a status past `stall_minutes`) become *faults*.
+- **Heal** — the AI *diagnoses* each fault, but deterministic code *executes* exactly
+  one action from a fixed allowlist (retry / requeue / quarantine / escalate / ignore).
+  Auth/config problems always escalate; anything unresolved after `max_heal_attempts`
+  escalates. **Escalation emails your own inbox** (once per fault) so a human can step in.
+- **Resolve** — a fault auto-closes when its step later succeeds, or the stalled lead
+  moves on. The observer never faults its own heal/observe work (no self-heal loop).
+
+**Cost is for pricing, not billing** — the runtime LLMs are free (FreeLLMAPI → Gemini →
+NVIDIA), so real provider cost ≈ $0. Set `observability.cost.rate_per_million_input`/
+`_output` to a market reference rate and a `margin_multiplier` to see "what would this
+cost at scale, and what should I charge?" Leave them at `0.0` to just count tokens.
+Turn the whole layer off per client with `observability.enabled: false` (the pipeline
+still runs and is still metered — only the watching/healing stops).
 
 ## leads.csv
 

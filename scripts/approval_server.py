@@ -13,6 +13,7 @@ from flask import Flask
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import config, state, sender, suppression, compliance, review, magnet, scheduling, reminders
+from core import observability as obs
 from core import calendar as gcal   # core/calendar.py (the booking seam), not stdlib calendar
 
 app = Flask(__name__)
@@ -137,7 +138,8 @@ def dashboard():
       <div style="max-width:760px;margin:0 auto;padding:40px 20px;">
         <h1 style="color:#2c3e50;margin-bottom:4px;">📋 {client_label} — Approval Queue</h1>
         <p style="color:#777;margin-top:0;margin-bottom:30px;">{count_line}. &nbsp;·&nbsp;
-           <a href="/appointments" style="color:#0056b3;text-decoration:none;">📅 View booked appointments →</a></p>
+           <a href="/appointments" style="color:#0056b3;text-decoration:none;">📅 Booked appointments</a> &nbsp;·&nbsp;
+           <a href="/health" style="color:#0056b3;text-decoration:none;">🩺 Pipeline health</a></p>
         {cards}
       </div>
     </body></html>""", 200
@@ -156,6 +158,7 @@ def approve(lead_id):
     to_email = data["target_email"]
     cfg = get_cfg(client)
     conn = open_conn(cfg)
+    run_id = obs.new_run_id()   # one ledger run per approval action (send is metered below)
 
     who = data.get("company_name") or to_email
     print(f"\n[!] WEB APPROVAL for {lead_id} ({who}) — client={client}, kind={kind}")
@@ -197,12 +200,13 @@ def approve(lead_id):
                     body += f"\nCalendar invite: {booked['html_link']}"
 
             # 3) Send the threaded reply (In-Reply-To / References keep it in-thread).
-            result = pool.send(
-                conn, to_email, data["drafted_subject"], body,
-                footer_html=footer_html, footer_text=footer_text, throttle=False,
-                in_reply_to=data.get("in_reply_to"), references=data.get("references"),
-                list_unsubscribe=unsub,
-            )
+            with obs.track(conn, cfg, "send", subject=to_email, run_id=run_id):
+                result = pool.send(
+                    conn, to_email, data["drafted_subject"], body,
+                    footer_html=footer_html, footer_text=footer_text, throttle=False,
+                    in_reply_to=data.get("in_reply_to"), references=data.get("references"),
+                    list_unsubscribe=unsub,
+                )
             if booked:
                 state.record_booking(conn, client, to_email,
                                      booked.get("event_id"), booked.get("start_iso"))
@@ -228,13 +232,14 @@ def approve(lead_id):
         # on "interested"/"not-interested" hits the routes below.
         cta_html = compliance.cta_buttons(cfg, token, "html")
         cta_text = compliance.cta_buttons(cfg, token, "text")
-        result = pool.send(
-            conn, to_email, data["drafted_subject"], data["drafted_body"],
-            footer_html=footer_html, footer_text=footer_text,
-            throttle=False,  # a human clicking already paces sends; throttle is for batch/cron
-            list_unsubscribe=unsub,
-            cta_html=cta_html, cta_text=cta_text,
-        )
+        with obs.track(conn, cfg, "send", subject=to_email, run_id=run_id):
+            result = pool.send(
+                conn, to_email, data["drafted_subject"], data["drafted_body"],
+                footer_html=footer_html, footer_text=footer_text,
+                throttle=False,  # a human clicking already paces sends; throttle is for batch/cron
+                list_unsubscribe=unsub,
+                cta_html=cta_html, cta_text=cta_text,
+            )
     except sender.SendCapExceeded as e:
         return page("Daily Limit Reached",
                     f"Not sent: {e}. This protects the sending domain's reputation. "
@@ -487,6 +492,167 @@ def appointments():
         <h1 style="color:#2c3e50;margin-bottom:4px;">📅 {client_label} — Booked Appointments</h1>
         <p style="color:#777;margin-top:0;">{count_line}. The reminder agent pings you before each one.</p>
         {body}
+      </div>
+    </body></html>""", 200
+
+
+# --- pipeline health / accounting dashboard --------------------------------
+
+# Fault-status palette (mirrors the lifecycle in core/state.py's faults table).
+_FAULT_BADGE = {
+    "open":      ("#ffebee", "#c62828"),
+    "healing":   ("#fff8e1", "#ef6c00"),
+    "escalated": ("#fce4ec", "#ad1457"),
+    "resolved":  ("#e8f5e9", "#2e7d32"),
+}
+
+
+def _kpi(label, value, sub="", accent="#2c3e50"):
+    """One big-number card for the KPI rows."""
+    sub_html = f'<div style="color:#999;font-size:12px;margin-top:3px;">{sub}</div>' if sub else ""
+    return (f'<div style="background:white;border-radius:10px;padding:18px 20px;'
+            f'box-shadow:0 2px 6px rgba(0,0,0,0.06);flex:1;min-width:150px;">'
+            f'<div style="color:#777;font-size:13px;">{label}</div>'
+            f'<div style="color:{accent};font-size:26px;font-weight:bold;margin-top:4px;">{value}</div>'
+            f'{sub_html}</div>')
+
+
+def _fault_row(f):
+    """One open fault as a table row (every field escaped)."""
+    bg, fg = _FAULT_BADGE.get(f["status"], ("#eee", "#555"))
+    status_badge = (f'<span style="background:{bg};color:{fg};padding:2px 8px;'
+                    f'border-radius:10px;font-size:12px;">{html.escape(f["status"])}</span>')
+    return (
+        '<tr style="border-bottom:1px solid #eee;font-size:14px;">'
+        f'<td style="padding:10px;white-space:nowrap;">#{f["id"]} {status_badge}</td>'
+        f'<td style="padding:10px;">{html.escape(f["kind"] or "")}</td>'
+        f'<td style="padding:10px;">{html.escape(f["step"] or "")}</td>'
+        f'<td style="padding:10px;">{html.escape(f["subject"] or "—")}</td>'
+        f'<td style="padding:10px;color:#666;">{html.escape((f["detail"] or "")[:90])}</td>'
+        f'<td style="padding:10px;">{html.escape(f["action"] or "—")}</td>'
+        f'<td style="padding:10px;text-align:center;">{f["attempts"]}</td>'
+        '</tr>'
+    )
+
+
+@app.route('/health')
+def health():
+    """Pipeline health + accounting for the active client.
+
+    Rolls up the observability ledger (event/error counts, token spend, notional
+    cost, unit economics) and shows the live fault list from the self-healing
+    layer. Pure reads — viewing this never mutates state.
+    """
+    client = config.active_client()
+    try:
+        cfg = get_cfg(client)
+        client_label = html.escape(cfg.get("client_name", client))
+    except Exception:
+        return page("Config Error", "Could not load the client configuration.", "⚠️"), 500
+
+    conn = open_conn(cfg)
+    try:
+        m = obs.metrics(conn, cfg)
+        counts = state.fault_counts(conn, client)
+        faults = state.open_faults(conn, client, limit=50)
+    finally:
+        conn.close()
+
+    t = m["totals"]
+    ue = m["unit_economics"]
+    err_color = "#c62828" if t["error_rate"] > 0.1 else ("#ef6c00" if t["error_rate"] > 0 else "#2e7d32")
+
+    kpis = (
+        _kpi("Events", f'{t["events"]:,}', f'{t["ok"]} ok · {t["skipped"]} skipped')
+        + _kpi("Error rate", f'{t["error_rate"]:.0%}', f'{t["error"]} error(s)', err_color)
+        + _kpi("Tokens", f'{t["total_tokens"]:,}',
+               f'{t["prompt_tokens"]:,} in · {t["completion_tokens"]:,} out')
+        + _kpi("Notional cost", f'${t["cost_usd"]:,.4f}', "at your reference rate")
+    )
+    econ = (
+        _kpi("Leads", f'{ue["leads"]:,}')
+        + _kpi("Bookings", f'{ue["bookings"]:,}')
+        + _kpi("Cost / lead", f'${ue["cost_per_lead"]:,.4f}')
+        + _kpi("Cost / booking", f'${ue["cost_per_booking"]:,.4f}')
+    )
+
+    if counts:
+        pills = " ".join(
+            f'<span style="background:{_FAULT_BADGE.get(s, ("#eee", "#555"))[0]};'
+            f'color:{_FAULT_BADGE.get(s, ("#eee", "#555"))[1]};padding:5px 13px;border-radius:12px;'
+            f'font-size:13px;font-weight:bold;margin-right:8px;">{html.escape(s)}: {c}</span>'
+            for s, c in sorted(counts.items()))
+    else:
+        pills = '<span style="color:#999;">No faults recorded — clean run. 🎉</span>'
+
+    if faults:
+        frows = "".join(_fault_row(f) for f in faults)
+        faults_table = (
+            '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;'
+            'background:white;border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,0.06);overflow:hidden;">'
+            '<tr style="text-align:left;color:#777;font-size:13px;background:#fafafa;">'
+            '<th style="padding:10px;">Fault</th><th style="padding:10px;">Kind</th>'
+            '<th style="padding:10px;">Step</th><th style="padding:10px;">Subject</th>'
+            '<th style="padding:10px;">Detail</th><th style="padding:10px;">Action</th>'
+            '<th style="padding:10px;">Tries</th></tr>'
+            f'{frows}</table></div>')
+    else:
+        faults_table = '<p style="color:#999;">No open faults — the healer has nothing to work. ✅</p>'
+
+    steps = m["by_step"]
+    if steps:
+        srows = ""
+        for name_, s in sorted(steps.items()):
+            tok = s["prompt_tokens"] + s["completion_tokens"]
+            avg = (s["duration_ms"] / s["events"]) if s["events"] else 0
+            ecolor = "#c62828" if s["error"] else "#333"
+            srows += (
+                '<tr style="border-bottom:1px solid #eee;font-size:14px;">'
+                f'<td style="padding:10px;font-weight:bold;">{html.escape(name_)}</td>'
+                f'<td style="padding:10px;">{s["events"]}</td>'
+                f'<td style="padding:10px;">{s["ok"]}</td>'
+                f'<td style="padding:10px;color:{ecolor};">{s["error"]}</td>'
+                f'<td style="padding:10px;">{tok:,}</td>'
+                f'<td style="padding:10px;">${s["cost_usd"]:.4f}</td>'
+                f'<td style="padding:10px;">{avg:.0f} ms</td></tr>')
+        steps_table = (
+            '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;'
+            'background:white;border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,0.06);overflow:hidden;">'
+            '<tr style="text-align:left;color:#777;font-size:13px;background:#fafafa;">'
+            '<th style="padding:10px;">Step</th><th style="padding:10px;">Events</th>'
+            '<th style="padding:10px;">OK</th><th style="padding:10px;">Error</th>'
+            '<th style="padding:10px;">Tokens</th><th style="padding:10px;">Cost</th>'
+            '<th style="padding:10px;">Avg time</th></tr>'
+            f'{srows}</table></div>')
+    else:
+        steps_table = ('<p style="color:#999;">No steps recorded yet. Run the agents (draft / '
+                       'reply / send) and they\'ll show up here.</p>')
+
+    def _section(title):
+        return f'<h2 style="color:#2c3e50;font-size:18px;margin:34px 0 12px;">{title}</h2>'
+
+    row_style = 'display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px;'
+    return f"""<html><head><title>{client_label} — Pipeline Health</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1"></head>
+    <body style="font-family:Arial,sans-serif;background:#f4f7f6;margin:0;padding:0;color:#333;">
+      <div style="max-width:960px;margin:0 auto;padding:40px 20px;">
+        <p style="margin:0 0 4px;">
+          <a href="/" style="color:#0056b3;text-decoration:none;">← Approval queue</a> &nbsp;·&nbsp;
+          <a href="/appointments" style="color:#0056b3;text-decoration:none;">📅 Appointments</a></p>
+        <h1 style="color:#2c3e50;margin-bottom:4px;">🩺 {client_label} — Pipeline Health</h1>
+        <p style="color:#777;margin-top:0;">Every step is metered in the ledger; the observer flags
+           missteps and the healer works them automatically, escalating to you only when it can't.</p>
+        {_section("📊 Throughput &amp; spend")}
+        <div style="{row_style}">{kpis}</div>
+        {_section("💰 Unit economics")}
+        <div style="{row_style}">{econ}</div>
+        <p style="color:#999;font-size:13px;margin-top:6px;">Cost is <b>notional</b> — real providers
+           are free; set a reference rate + margin in <code>observability.cost</code> to price clients.</p>
+        {_section("🚑 Faults")}
+        <p style="margin:0 0 14px;">{pills}</p>
+        {faults_table}
+        {_section("🪜 By step")}
+        {steps_table}
       </div>
     </body></html>""", 200
 
