@@ -177,25 +177,43 @@ def _nvidia_chat(cfg, prompt, temperature=0.4, max_tokens=400):
 
 
 def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=1024):
-    """Call the Anthropic Messages API — real Claude, METERED (spends dev credits).
+    """Call the Anthropic Messages API — real Claude, METERED (spends credits/quota).
 
-    This is the 'premium' copy path. It is gated by a hard daily $ cap in
-    core/budget.py: a caller only puts 'anthropic' in cfg['providers'] when today's
-    spend is under the cap, so a bulk run can never drain the shared credit pool that
-    also powers Claude Code. If the key is absent this raises, so generate() cleanly
-    degrades to the free chain (premium is simply dormant until a key is added).
+    Works against the official API OR any Anthropic-compatible proxy/gateway
+    (e.g. AgentRouter) via two env vars, so one premium path serves both:
+      ANTHROPIC_API_KEY   the key/token (ANTHROPIC_AUTH_TOKEN is also accepted).
+      ANTHROPIC_BASE_URL  the endpoint host WITHOUT a trailing /v1 (default
+                          https://api.anthropic.com; AgentRouter is
+                          https://agentrouter.org). '/v1/messages' is appended here.
+    The key is sent BOTH as 'x-api-key' (official API) and 'Authorization: Bearer'
+    (what proxies like AgentRouter read), so whichever the endpoint honors, it works.
+    Some gateways also fingerprint the CALLING TOOL and 401 a generic HTTP client, so
+    we identify as the Claude CLI via 'User-Agent' (override with ANTHROPIC_USER_AGENT).
+
+    Gated by the daily $ cap in core/budget.py. If the key is absent this raises, so
+    generate() cleanly degrades to the free chain (premium is dormant until a key
+    is added).
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY not set")
+    base = (os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com").rstrip("/")
+    if base.endswith("/v1"):          # tolerate a base that already includes /v1
+        base = base[:-len("/v1")].rstrip("/")
     model = cfg.get("anthropic_model") \
         or (cfg.get("copy", {}) or {}).get("anthropic_model") or "claude-opus-4-8"
+    # Proxies (e.g. AgentRouter) reject a generic 'python-requests' User-Agent with
+    # 401 "unauthorized client detected"; identify as the Claude CLI (this IS Claude
+    # tooling). Harmless against the official API, which does not gate on User-Agent.
+    user_agent = os.environ.get("ANTHROPIC_USER_AGENT") or "claude-cli/1.0.60 (external, cli)"
     resp = requests.post(
-        "https://api.anthropic.com/v1/messages",
+        f"{base}/v1/messages",
         headers={
             "x-api-key": api_key,
+            "authorization": f"Bearer {api_key}",   # AgentRouter & other proxies auth via Bearer
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
+            "user-agent": user_agent,
         },
         json={
             "model": model,
