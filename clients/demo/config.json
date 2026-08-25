@@ -10,7 +10,7 @@
   "copy": {
     "premium": true,
     "anthropic_model": "claude-opus-4-8",
-    "premium_daily_usd_cap": 5.0
+    "premium_daily_usd_cap": null
   },
   "demo_mode": false,
   "lead_source": "csv",
