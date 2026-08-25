@@ -7,7 +7,7 @@ import time
 
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core import config, state, suppression, review, magnet, leads as leads_source
+from core import config, state, suppression, review, magnet, budget, quality, leads as leads_source
 from core import observability as obs
 from core.ai import generate, generate_json
 
@@ -38,22 +38,25 @@ def generate_strategy(cfg, lead):
         if service else ""
     )
 
-    prompt = f"""
-    You are the Lead Strategist for '{cfg['client_name']}'.
-    {cfg['client_name']} specializes in Localized Multilingual Support Agents, Enterprise Workflow Automation, and Air-Gapped Internal Knowledge Bases.
-{service_line}
-    Analyze this prospect:
-    Name: {lead['first_name']} {lead['last_name']}
-    Title: {lead['title']}
-    Company: {lead['company_name']}
-    Company Description: {lead['company_description']}
+    prompt = f"""You are the lead strategist for {cfg['client_name']}, an AI automation agency
+    whose offerings include Localized Multilingual Support Agents, AI Lead Generation Systems,
+    Air-Gapped Internal Knowledge Bases (RAG), and Enterprise Workflow Automation.{service_line}
+    Prospect:
+    - Name: {lead.get('first_name','')} {lead.get('last_name','')}
+    - Title: {lead.get('title','')}
+    - Company: {lead.get('company_name','')}
+    - What we know about them: {lead.get('company_description','')}
 
-    CRITICAL INSTRUCTIONS:
-    1. Identify ONE realistic operational bottleneck they face based on their industry.
-    2. The "Free Gift" (Lead Magnet) we always offer is a personalized mini-audit / AI blueprint page tailored to this prospect. Describe what that audit should focus on for them.
-    3. Write a brief for your copywriter explaining exactly what the bottleneck is and what the personalized audit will cover.
+    Using ONLY the facts above (never invent details), write a tight brief the copywriter will
+    turn into a cold email. Fill in each line with something specific to THIS prospect:
 
-    Output ONLY the strategic brief.
+    OBSERVATION: one specific, verifiable thing about this business — quote a concrete detail from what we know.
+    PAIN: the single most costly operational bottleneck that detail implies.
+    SERVICE: the one {cfg['client_name']} offering that best relieves it{f" (default to '{service}')" if service else ''}.
+    OUTCOME: one believable result of that service, with a plausible number or timeframe — no hype.
+    AUDIT: what the free personalized audit page for them should focus on.
+
+    Output ONLY those five labeled lines, nothing else.
     """
     brief, provider = generate(cfg, prompt)
     return brief, provider
@@ -66,42 +69,19 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     # post-generation safety net below use the same real sender identity.
     sender_name = (cfg.get("from_name") or cfg.get("client_name") or "our team").strip()
 
-    # The "free gift" is a real, personalized audit page. We hand the copywriter the
-    # actual URL and require it verbatim, so the email never ships a dead placeholder.
-    if magnet_url:
-        gift_instruction = (
-            f'4. Offer them their free personalized AI audit and include this EXACT link on its own '
-            f'line so they can open it right away: {magnet_url}\n'
-            f'   Write the URL in full and unchanged. Never use placeholder text like "[Link to Free Gift]".'
-        )
-    else:
-        gift_instruction = (
-            '4. Offer to send them a free personalized AI audit and invite them to reply if they want it. '
-            'Do NOT invent or include any link.'
-        )
+    prompt = f"""You are a world-class B2B cold-email copywriter writing ONE email for {cfg['client_name']}.
 
-    prompt = f"""
-    You are an expert, high-converting B2B Copywriter.
-    Your Lead Strategist has provided you with the following strategy to pitch a prospect:
+    PROSPECT:
+    Name: {lead.get('first_name','')} {lead.get('last_name','')}
+    Company: {lead.get('company_name','')}
 
-    PROSPECT DETAILS:
-    Name: {lead['first_name']} {lead['last_name']}
-    Company: {lead['company_name']}
-
-    STRATEGY BRIEF:
+    STRATEGY BRIEF — ground every line in this; do not invent facts beyond it:
     {strategy_brief}
 
-    INSTRUCTIONS:
-    Write a cold outreach email based exactly on the Strategy Brief.
-    1. Start the body with a highly personalized greeting using their first name ('Hi {lead['first_name']},').
-    2. Be extremely concise (under 100 words), human-sounding, and conversational.
-    3. Do not sound like an AI. Do not use corporate buzzwords.
-    {gift_instruction}
-    5. Deliverability: write in plain, natural language. Avoid spam-trigger words (free money, guarantee, act now, limited time, click here, 100%, cash, urgent, risk-free), do not use ALL-CAPS words, do not use more than one exclamation mark, and only ever use https links.
-    6. Sign off warmly using the sender name "{sender_name}" (put "Best," on one line, then "{sender_name}" on the next). Never leave a placeholder such as "[Your Name]", "[Name]", or "[Your name]".
+    {quality.copy_instructions(sender_name, magnet_url)}
 
-    Reply with ONLY a JSON object, no prose and no markdown fences:
-    {{"subject": "<the subject line, WITHOUT a 'Subject:' prefix>", "body": "<the full email body, greeting through sign-off, using real newlines>"}}
+    Reply with ONLY this JSON, no prose and no markdown fences:
+    {{"subject": "<subject, WITHOUT a 'Subject:' prefix>", "body": "<full body, greeting through sign-off, using real newlines>"}}
     """
     # JSON (not free text) so a model that emits chain-of-thought around the answer
     # can't leak its reasoning into the email — generate_json pulls out the {…} block
@@ -109,16 +89,9 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     # lead back and retries rather than shipping a blank pitch.
     obj, provider = generate_json(cfg, prompt)
     subject = (obj.get("subject") or "").strip() or f"A quick idea for {lead['company_name']}"
-    body = (obj.get("body") or "").strip()
+    body = quality.finalize_body(obj.get("body") or "", sender_name, magnet_url)
     if not body:
         raise RuntimeError("copywriter returned an empty body")
-    # Safety net: even with the prompt above, models occasionally emit a template
-    # signature. Substitute the real sender name so we never ship "[Your Name]".
-    for _ph in ("[Your Name]", "[Your name]", "[YOUR NAME]", "[Name]", "[name]", "[Your Company]"):
-        body = body.replace(_ph, sender_name)
-    # We promised a personalized link; guarantee it's actually in the email.
-    if magnet_url and magnet_url not in body:
-        body = f"{body}\n\n{magnet_url}"
     return subject, body, provider
 
 
@@ -140,8 +113,11 @@ def main():
     cfg = config.load_client()
     print("=========================================================")
     print(f"🚀 {cfg['client_name']} - Lead Scout & Drafter")
-    print(f"   client={cfg['client']}  provider={cfg['copy_provider']}  "
-          f"send_mode={cfg['sending']['mode']}  demo_mode={cfg['demo_mode']}")
+    _cap = budget.daily_cap_usd(cfg)
+    _prem = ("on" + (f" (≤${_cap:.2f}/day)" if _cap else " (uncapped)")) if budget.premium_enabled(cfg) else "off"
+    _gate = "on" if ((cfg.get("copy", {}) or {}).get("quality_gate", {}) or {}).get("enabled") else "off"
+    print(f"   client={cfg['client']}  send_mode={cfg['sending']['mode']}  "
+          f"demo_mode={cfg['demo_mode']}  premium_copy={_prem}  quality_gate={_gate}")
     print("=========================================================")
 
     conn = state.connect(cfg["paths"]["db"])
@@ -205,13 +181,18 @@ def main():
             subject, body = get_demo_pitch(lead["company_name"])
             provider = "demo"
         else:
+            # Premium-first copy when today's real-Claude spend is under the daily cap,
+            # else the free chain (decided in core/budget.copy_cfg). The strategist, the
+            # copywriter, and the quality gate all use gen_cfg so their tokens count
+            # toward the cap; the magnet page stays on the free chain to control spend.
+            gen_cfg = budget.copy_cfg(conn, cfg)
             try:
-                # Track the whole draft as one ledger step: both the strategist and
-                # the copywriter LLM calls attribute their tokens/cost here, and a
+                # Track the whole draft as one ledger step: the strategist, copywriter,
+                # and quality-gate LLM calls attribute their tokens/cost here, and a
                 # generation failure is recorded as an 'error' event (then re-raised
                 # into the rollback below — the observer will open a fault for it).
                 with obs.track(conn, cfg, "draft", subject=lead["email"], run_id=run_id):
-                    brief, _ = generate_strategy(cfg, lead)
+                    brief, _ = generate_strategy(gen_cfg, lead)
                     # Build the prospect's real "free gift": a personalized audit page,
                     # stored now so its link resolves the moment the email is approved.
                     try:
@@ -223,7 +204,9 @@ def main():
                     except Exception as e:
                         print(f"   ⚠️  Magnet generation failed ({e}); drafting without a link.")
                         magnet_url = None
-                    subject, body, provider = generate_copy(cfg, lead, brief, magnet_url)
+                    # Draft → score → rewrite weak copy (LLM-as-judge, see core/quality).
+                    subject, body, provider = quality.draft_and_polish(
+                        gen_cfg, lead, brief, magnet_url, generate_copy)
             except Exception as e:
                 print(f"   ❌ Generation failed for {lead['company_name']}: {e}. "
                       f"Rolling back so this lead retries on the next run.")
