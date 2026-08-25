@@ -7,6 +7,11 @@
   "copy_provider": "gemini",
   "gemini_model": "gemini-2.5-flash",
   "nvidia_model": "meta/llama-3.1-70b-instruct",
+  "copy": {
+    "premium": false,
+    "anthropic_model": "claude-opus-4-8",
+    "premium_daily_usd_cap": 5.0
+  },
   "demo_mode": false,
   "timezone": "UTC",
   "booking": {

@@ -40,6 +40,17 @@ DEFAULTS = {
     "freellmapi_model": "",                  # "" / "auto" = let the gateway auto-route
     "gemini_model": "gemini-2.5-flash",
     "nvidia_model": "meta/llama-3.1-70b-instruct",
+    "copy": {                                # premium-copy controls (see core/budget.py)
+        "premium": False,                    # True = try real Claude (Anthropic API) FIRST for copy
+        "anthropic_model": "claude-opus-4-8",  # which Claude writes the copy when premium is on
+        "premium_daily_usd_cap": 5.0,        # hard $/day cap on real-Claude spend; null = unlimited
+        "quality_gate": {                    # LLM-as-judge: score every draft, rewrite weak ones
+            "enabled": True,
+            "min_score": 8,                  # 1-10; drafts below this get a rewrite pass
+            "max_revisions": 1,              # rewrite passes before accepting the best so far
+            "best_of": 1,                    # draft N candidates, keep the highest-scoring (1 = off)
+        },
+    },
     "demo_mode": False,                      # False = real AI generation
     "lead_source": "csv",                    # "csv" (curated file) | "maps_firecrawl" | "yellowpages" (auto-discovery)
     "discovery": {                           # used only when lead_source == "maps_firecrawl"

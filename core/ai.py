@@ -176,9 +176,51 @@ def _nvidia_chat(cfg, prompt, temperature=0.4, max_tokens=400):
     return data["choices"][0]["message"]["content"].strip(), _norm_usage(data.get("usage"))
 
 
+def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=1024):
+    """Call the Anthropic Messages API — real Claude, METERED (spends dev credits).
+
+    This is the 'premium' copy path. It is gated by a hard daily $ cap in
+    core/budget.py: a caller only puts 'anthropic' in cfg['providers'] when today's
+    spend is under the cap, so a bulk run can never drain the shared credit pool that
+    also powers Claude Code. If the key is absent this raises, so generate() cleanly
+    degrades to the free chain (premium is simply dormant until a key is added).
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    model = cfg.get("anthropic_model") \
+        or (cfg.get("copy", {}) or {}).get("anthropic_model") or "claude-opus-4-8"
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=60,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Anthropic API {resp.status_code}: {resp.text[:200]}")
+    data = resp.json()
+    parts = [b.get("text", "") for b in (data.get("content") or []) if b.get("type") == "text"]
+    text = "".join(parts).strip()
+    if not text:
+        raise RuntimeError("Anthropic returned empty content")
+    u = data.get("usage") or {}
+    it, ot = int(u.get("input_tokens") or 0), int(u.get("output_tokens") or 0)
+    return text, {"prompt_tokens": it, "completion_tokens": ot, "total_tokens": it + ot}
+
+
 # Every provider is callable as fn(cfg, prompt); each raises if its creds are
 # missing, so generate() just moves on to the next one.
 _PROVIDER_FUNCS = {
+    "anthropic": _anthropic_chat,   # premium (metered) — used only when budget.copy_cfg enables it
     "freellmapi": _freellmapi_chat,
     "gemini": _gemini_chat,
     "nvidia": _nvidia_chat,

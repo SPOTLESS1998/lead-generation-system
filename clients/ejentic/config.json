@@ -7,6 +7,12 @@
   "copy_provider": "gemini",
   "gemini_model": "gemini-2.5-flash",
   "nvidia_model": "meta/llama-3.1-70b-instruct",
+  "freellmapi_model": ["mistral-large-latest", "mistral-medium-latest", "command-a-03-2025", "glm-4.7-flash", "deepseek-v3.2"],
+  "copy": {
+    "premium": true,
+    "anthropic_model": "claude-opus-4-8",
+    "premium_daily_usd_cap": 5.0
+  },
   "demo_mode": false,
   "lead_source": "maps_firecrawl",
   "discovery": {
