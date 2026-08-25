@@ -26,9 +26,14 @@ in `data/<name>/state.sqlite` (git-ignored, machine-local).
 | `from_name` | Display name on the From line. |
 | `reply_to` | Optional Reply-To address (`null` to omit). |
 | `physical_address` | **Required by CAN-SPAM** — a real postal address, printed in every footer. |
-| `unsubscribe_base_url` | Base URL for unsubscribe links (`http://localhost:5001` for the demo). |
+| `unsubscribe_base_url` | Base URL for unsubscribe + audit-link + one-click reply buttons. Its **port is also where the approval server binds** (`http://localhost:5002` for the demo), so links and server can't drift apart. |
 | `copy_provider` | `"gemini"` (mandated) or `"nvidia"` (fallback). |
 | `gemini_model` / `nvidia_model` | Model IDs for each provider. |
+| `providers` | Optional explicit fallback chain, e.g. `["freellmapi","gemini","nvidia"]`. Omit to use the default chain. `anthropic` is added/removed automatically by the budget guard — don't list it here. |
+| `copy.premium` | `true` = route cold-email copy to **real Claude** (the Anthropic Messages API) when today's spend is under the cap. `false` = free providers only. |
+| `copy.anthropic_model` | Which Claude to use for premium copy (e.g. `claude-opus-4-8`). |
+| `copy.premium_daily_usd_cap` | **Hard daily $ ceiling** on real-Claude spend, per client. Once today's metered spend reaches it, copy auto-falls back to the free chain until tomorrow. `null`/absent = uncapped. |
+| `copy.quality_gate` | Optional draft-scoring gate — see below. `{enabled, min_score, max_revisions, best_of}`. |
 | `demo_mode` | `false` = real AI generation. `true` = canned pitches (recording only). |
 | `timezone` | IANA tz (e.g. `Africa/Lagos`) used when proposing and booking meeting times. |
 | `booking.enabled` | `true` = create a real Google Calendar event when an *interested* reply is approved. |
@@ -148,6 +153,45 @@ NVIDIA), so real provider cost ≈ $0. Set `observability.cost.rate_per_million_
 cost at scale, and what should I charge?" Leave them at `0.0` to just count tokens.
 Turn the whole layer off per client with `observability.enabled: false` (the pipeline
 still runs and is still metered — only the watching/healing stops).
+
+## Premium copy & the quality gate
+
+The pitch is what converts, so the copy path can run on **real Claude** and be
+**scored before it ships**. Both are optional and both degrade gracefully.
+
+**Premium copy (`copy.premium`)** — when on, each draft first checks today's
+real-Claude spend against `copy.premium_daily_usd_cap`. Under the cap, the copy LLM
+tries **Anthropic first**, then the free chain; at/over the cap, `anthropic` is
+dropped and it's the free chain only. Spend is reconstructed from the ledger
+(`/health` shows *premium model · spent today · remaining*). No key in `.env` →
+premium is simply **dormant** and the free chain answers — nothing breaks.
+
+```json
+"copy": {
+  "premium": true,
+  "anthropic_model": "claude-opus-4-8",
+  "premium_daily_usd_cap": 5.0
+}
+```
+
+> Add `ANTHROPIC_API_KEY=sk-ant-…` to `.env` (git-ignored) to activate it. The cap
+> protects the shared dev-credit pool — a bulk run can never blow past it, because
+> the check runs *before* every draft and unknown models are priced as Opus (the
+> expensive tier), so the guard errs toward stopping early.
+
+**Quality gate (`copy.quality_gate`)** — an LLM-as-judge scores every draft 1-10
+against a fixed rubric and rewrites anything below `min_score`, up to `max_revisions`
+times; `best_of` drafts N candidates and keeps the highest. If the judge LLM is
+unavailable the draft simply ships **unscored** (never blocks the pipeline).
+
+```json
+"copy": {
+  "premium": true,
+  "anthropic_model": "claude-opus-4-8",
+  "premium_daily_usd_cap": 5.0,
+  "quality_gate": { "enabled": true, "min_score": 8, "max_revisions": 1, "best_of": 2 }
+}
+```
 
 ## leads.csv
 
