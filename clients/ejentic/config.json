@@ -3,7 +3,7 @@
   "from_name": "Ejentic AI Outreach",
   "reply_to": null,
   "physical_address": "REPLACE-ME: your business postal address (required by CAN-SPAM before real sends)",
-  "unsubscribe_base_url": "http://localhost:5001",
+  "unsubscribe_base_url": "http://localhost:5002",
   "copy_provider": "gemini",
   "gemini_model": "gemini-2.5-flash",
   "nvidia_model": "meta/llama-3.1-70b-instruct",

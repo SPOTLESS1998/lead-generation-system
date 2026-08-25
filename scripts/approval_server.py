@@ -6,13 +6,14 @@ import sys
 import html
 import logging
 from datetime import datetime
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from flask import Flask
 
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core import config, state, sender, suppression, compliance, review, magnet, scheduling, reminders
+from core import config, state, sender, suppression, compliance, review, magnet, scheduling, reminders, budget
 from core import observability as obs
 from core import calendar as gcal   # core/calendar.py (the booking seam), not stdlib calendar
 
@@ -555,6 +556,7 @@ def health():
         m = obs.metrics(conn, cfg)
         counts = state.fault_counts(conn, client)
         faults = state.open_faults(conn, client, limit=50)
+        bstat = budget.status(conn, cfg)
     finally:
         conn.close()
 
@@ -632,6 +634,32 @@ def health():
         return f'<h2 style="color:#2c3e50;font-size:18px;margin:34px 0 12px;">{title}</h2>'
 
     row_style = 'display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px;'
+
+    # Premium copy (real Claude) spend + daily-cap status, straight from the ledger.
+    if bstat.get("premium"):
+        cap = bstat.get("cap_usd")
+        allowed = bstat.get("allowed_now")
+        rem = bstat.get("remaining_usd")
+        prem_kpis = (
+            _kpi("Premium model", html.escape(str(bstat.get("model") or "—")))
+            + _kpi("Spent today", f'${bstat.get("spent_today_usd", 0) or 0:.4f}',
+                   (f'of ${cap:.2f} daily cap' if cap else 'uncapped'))
+            + _kpi("Remaining today", (f'${rem:.4f}' if rem is not None else '∞'),
+                   ("premium active" if allowed else "cap hit — free fallback"),
+                   "#2e7d32" if allowed else "#ef6c00")
+        )
+        premium_section = (
+            _section("💎 Premium copy (real Claude)")
+            + f'<div style="{row_style}">{prem_kpis}</div>'
+            + '<p style="color:#999;font-size:13px;margin-top:6px;">Real-Claude copy spend is '
+              'reconstructed from the ledger and capped per day; once the cap is hit, drafting '
+              'auto-falls back to the free provider chain.</p>')
+    else:
+        premium_section = (
+            _section("💎 Premium copy")
+            + '<p style="color:#999;">Off — drafting uses the free provider chain. Set '
+              '<code>copy.premium</code> in the client config to route copy to real Claude.</p>')
+
     return f"""<html><head><title>{client_label} — Pipeline Health</title>
     <meta name="viewport" content="width=device-width, initial-scale=1"></head>
     <body style="font-family:Arial,sans-serif;background:#f4f7f6;margin:0;padding:0;color:#333;">
@@ -646,8 +674,9 @@ def health():
         <div style="{row_style}">{kpis}</div>
         {_section("💰 Unit economics")}
         <div style="{row_style}">{econ}</div>
-        <p style="color:#999;font-size:13px;margin-top:6px;">Cost is <b>notional</b> — real providers
-           are free; set a reference rate + margin in <code>observability.cost</code> to price clients.</p>
+        <p style="color:#999;font-size:13px;margin-top:6px;">Cost is <b>notional</b> — free providers
+           are $0; set a reference rate + margin in <code>observability.cost</code> to price clients.</p>
+        {premium_section}
         {_section("🚑 Faults")}
         <p style="margin:0 0 14px;">{pills}</p>
         {faults_table}
@@ -763,9 +792,31 @@ def strategic_audit():
     """
 
 
+def _resolve_port():
+    """Which port to bind. Single source of truth so the baked email links and the
+    server can never drift again:
+      1. env PORT / APPROVAL_PORT wins (for a reverse-proxy / custom setup), else
+      2. the port in the active client's unsubscribe_base_url (what the links use), else
+      3. 5001 (legacy default).
+    """
+    for var in ("PORT", "APPROVAL_PORT"):
+        v = (os.environ.get(var) or "").strip()
+        if v.isdigit():
+            return int(v)
+    try:
+        base = _CFG_CACHE.get(config.active_client()) or config.load_client(config.active_client())
+        p = urlparse(base.get("unsubscribe_base_url") or "").port
+        if p:
+            return int(p)
+    except Exception:
+        pass
+    return 5001
+
+
 if __name__ == '__main__':
+    _port = _resolve_port()
     print("=========================================================")
     print("🚀 Ejentic AI - Web Approval Server")
-    print("Listening for button clicks on http://localhost:5001 ...")
+    print(f"Listening for button clicks on http://localhost:{_port} ...")
     print("=========================================================")
-    app.run(port=5001, debug=False)
+    app.run(port=_port, debug=False)

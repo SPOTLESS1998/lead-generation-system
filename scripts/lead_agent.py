@@ -95,14 +95,18 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     return subject, body, provider
 
 
-def get_demo_pitch(company_name):
-    """Canned pitches for demo_mode (video recording only) — no API calls."""
+def get_demo_pitch(company_name, base_url=None):
+    """Canned pitches for demo_mode (video recording only) — no API calls.
+
+    Links are built from the client's base URL so they always point at the running
+    approval server (never a stale hardcoded port)."""
+    base = (base_url or "http://localhost:5001").rstrip("/")
     if "Adebayo" in company_name:
-        return ("Automating Tax Audits for Adebayo & Co", "Hi Oluwatobi,\n\nI noticed Adebayo & Co handles a massive volume of tax audits and payroll processing for mid-sized enterprises. Manually verifying those ledgers takes your team hours every week.\n\nI mapped out a step-by-step architectural blueprint showing exactly how your firm can automate ledger ingestion and payroll reconciliation using OCR and secure AI models. I've attached the blueprint below for your review.\n\nhttp://localhost:5001/magnet/blueprint\n\nBest,\nEjentic AI Team")
+        return ("Automating Tax Audits for Adebayo & Co", "Hi Oluwatobi,\n\nI noticed Adebayo & Co handles a massive volume of tax audits and payroll processing for mid-sized enterprises. Manually verifying those ledgers takes your team hours every week.\n\nI mapped out a step-by-step architectural blueprint showing exactly how your firm can automate ledger ingestion and payroll reconciliation using OCR and secure AI models. I've attached the blueprint below for your review.\n\n" + f"{base}/magnet/blueprint" + "\n\nBest,\nEjentic AI Team")
     elif "Capital Homes" in company_name:
-        return ("Automating Client Inquiries for Capital Homes", "Hi Amina,\n\nI love the luxury properties you are brokering at Capital Homes Abuja. Since you manage thousands of client inquiries monthly, your team likely spends hours answering repetitive questions about property viewings, especially late at night.\n\nI built a custom AI chatbot prototype specifically trained on your Maitama listings. I've generated a 7-day temporary access pass for you to test the software live.\n\nHere is the secure link to test the prototype:\n\nhttp://localhost:5001/magnet/chatbot\n\nBest,\nEjentic AI Team")
+        return ("Automating Client Inquiries for Capital Homes", "Hi Amina,\n\nI love the luxury properties you are brokering at Capital Homes Abuja. Since you manage thousands of client inquiries monthly, your team likely spends hours answering repetitive questions about property viewings, especially late at night.\n\nI built a custom AI chatbot prototype specifically trained on your Maitama listings. I've generated a 7-day temporary access pass for you to test the software live.\n\nHere is the secure link to test the prototype:\n\n" + f"{base}/magnet/chatbot" + "\n\nBest,\nEjentic AI Team")
     else:
-        return ("Strategic Audit for Lagos Style Hub", "Hi Chinedu,\n\nI've been following Lagos Style Hub's growth. Managing thousands of daily fashion orders across Nigeria must create a massive bottleneck for your customer support team, leading to missed sales in your DMs.\n\nI did a brief strategic audit of your current workflow and mapped out the exact step-by-step process of how you can build an Autonomous AI Lead Generation & Support System to instantly capture lost WhatsApp sales. \n\nI've linked the strategic breakdown below.\n\nhttp://localhost:5001/magnet/strategic-audit\n\nBest,\nEjentic AI Team")
+        return ("Strategic Audit for Lagos Style Hub", "Hi Chinedu,\n\nI've been following Lagos Style Hub's growth. Managing thousands of daily fashion orders across Nigeria must create a massive bottleneck for your customer support team, leading to missed sales in your DMs.\n\nI did a brief strategic audit of your current workflow and mapped out the exact step-by-step process of how you can build an Autonomous AI Lead Generation & Support System to instantly capture lost WhatsApp sales. \n\nI've linked the strategic breakdown below.\n\n" + f"{base}/magnet/strategic-audit" + "\n\nBest,\nEjentic AI Team")
 
 
 # --------------------------------------------------------------------------
@@ -178,7 +182,7 @@ def main():
         if cfg["demo_mode"]:
             print_step(f"🧠 [demo] Strategist analyzing {lead['company_name']}...")
             time.sleep(1.0)
-            subject, body = get_demo_pitch(lead["company_name"])
+            subject, body = get_demo_pitch(lead["company_name"], cfg.get("unsubscribe_base_url"))
             provider = "demo"
         else:
             # Premium-first copy when today's real-Claude spend is under the daily cap,
