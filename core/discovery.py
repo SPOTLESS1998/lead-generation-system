@@ -45,8 +45,11 @@ DEFAULT_MAPS_SLUG = "GOOGLE_MAPS_TEXT_SEARCH"
 DEFAULT_FIRECRAWL_SLUG = "FIRECRAWL_SCRAPE"
 
 # Only these Maps fields are requested — keeps the response small and cheap.
+# rating/userRatingCount/types cost nothing extra and give us real social proof
+# (a gated review signal) + a category hint for the extractor.
 MAPS_FIELD_MASK = ("places.id,places.displayName,places.formattedAddress,"
-                   "places.websiteUri,places.nationalPhoneNumber,places.businessStatus")
+                   "places.websiteUri,places.nationalPhoneNumber,places.businessStatus,"
+                   "places.rating,places.userRatingCount,places.types")
 
 # Markdown handed to the extractor is truncated to bound token cost.
 MAX_MARKDOWN_CHARS = 6000
@@ -228,6 +231,9 @@ def _maps_search(spec, max_results, slug):
             "website_url": website,
             "address": (p.get("formattedAddress") or "").strip(),
             "phone": (p.get("nationalPhoneNumber") or "").strip(),
+            "rating": p.get("rating"),                 # float | None — gated social proof
+            "review_count": p.get("userRatingCount"),  # int | None
+            "types": p.get("types") or [],             # category hint for the extractor
             "segment": segment,
             "ejentic_service": service,
         })
@@ -269,12 +275,14 @@ def _firecrawl_markdown(url, slug):
 # Step 3 — AI extraction
 # --------------------------------------------------------------------------
 
-def _extraction_prompt(company_name, website_url, markdown):
+def _extraction_prompt(company_name, website_url, markdown, category_hint=""):
     text = (markdown or "")[:MAX_MARKDOWN_CHARS]
-    return f"""You are extracting B2B contact details for a cold-outreach system from a company's own website text.
+    hint = (f"\nLIKELY CATEGORY (context only — do NOT quote this back; confirm against the text): {category_hint}"
+            if category_hint else "")
+    return f"""You are extracting B2B facts for a cold-outreach system from a company's own website text.
 
 COMPANY: {company_name}
-WEBSITE: {website_url}
+WEBSITE: {website_url}{hint}
 WEBSITE TEXT (markdown, possibly truncated):
 \"\"\"
 {text}
@@ -284,8 +292,10 @@ Return ONLY a JSON object with exactly these keys:
 - "email": the best PUBLIC business contact email that literally appears in the text (e.g. info@, hello@, or a named person's address). Use "" if none appears. NEVER invent or guess an email.
 - "first_name", "last_name", "title": a specific contact person ONLY if the text clearly names one with their role (founder, partner, manager, etc.); otherwise use "" for all three.
 - "company_description": ONE concise sentence (max 25 words) describing what the company does, based only on the text.
+- "services": their specific products/services as a short comma-separated list, drawn ONLY from the text (e.g. "tax audits, payroll, bookkeeping"). Use "" if the text doesn't say.
+- "specific_detail": ONE concrete, verifiable detail clearly true of THIS company from the text — a named product, market, location, client, or a claim they make about themselves — that a stranger could accurately cite back to them. Max 20 words. Do NOT repeat company_description. Use "" if nothing specific stands out.
 
-Rules: use ONLY information present in the text; never fabricate an email or a person; if unsure, use "".
+Rules: use ONLY information present in the text; never fabricate an email, a person, a service, or a detail; if unsure, use "".
 Reply with ONLY the JSON object — no prose, no code fence."""
 
 
@@ -302,9 +312,55 @@ def _clean_email(raw):
     return e.strip().strip("<>").strip().rstrip(".,;:>)")
 
 
+def _coerce_str(val):
+    """Flatten an extractor value to a trimmed string. A model may return a list
+    (e.g. services) or a number where we expect text — mirror the defensive
+    coercion in core/quality.py rather than trust the JSON shape."""
+    if isinstance(val, (list, tuple)):
+        return ", ".join(str(v).strip() for v in val if str(v).strip())
+    if val is None:
+        return ""
+    return str(val).strip()
+
+
+def _review_signal(business):
+    """A short, TRUE social-proof phrase from Google Maps — but ONLY when the rating
+    is genuinely strong. Never surface a mediocre/low rating (it hands the prospect a
+    reason to say no), and require a floor of reviews so a lone 5-star isn't dressed
+    up as a track record. Returns "" when it shouldn't be mentioned at all."""
+    try:
+        rating = float(business.get("rating"))
+        count = int(business.get("review_count"))
+    except (TypeError, ValueError):
+        return ""
+    if rating >= 4.3 and count >= 15:
+        r = f"{rating:.1f}".rstrip("0").rstrip(".")
+        return f"Well-reviewed: {r}-star average across {count} Google reviews"
+    return ""
+
+
+def _company_facts(obj, business):
+    """Assemble a compact, human-readable facts string from the extracted fields plus
+    Maps social proof. Only non-empty pieces are included; returns "" if we learned
+    nothing beyond the description (consumers then fall back to it / the company name)."""
+    services = _coerce_str(obj.get("services"))
+    detail = _coerce_str(obj.get("specific_detail"))
+    review = _review_signal(business)
+    parts = []
+    if services:
+        parts.append(f"Services: {services}.")
+    if detail:
+        parts.append(f"Notable: {detail}.")
+    if review:
+        parts.append(f"{review}.")
+    return " ".join(parts)
+
+
 def _extract_lead(cfg, business, markdown):
     """Turn one scraped business into a lead dict (or None if unusable)."""
-    prompt = _extraction_prompt(business["company_name"], business["website_url"], markdown)
+    category_hint = ", ".join(str(t) for t in (business.get("types") or [])[:4]).replace("_", " ")
+    prompt = _extraction_prompt(business["company_name"], business["website_url"],
+                                markdown, category_hint)
     try:
         obj, _ = generate_json(cfg, prompt)
     except Exception as e:
@@ -315,15 +371,18 @@ def _extract_lead(cfg, business, markdown):
 
     email = _clean_email(obj.get("email"))
     lead = {
-        "first_name": (obj.get("first_name") or "").strip(),
-        "last_name": (obj.get("last_name") or "").strip(),
-        "title": (obj.get("title") or "").strip(),
+        "first_name": _coerce_str(obj.get("first_name")),
+        "last_name": _coerce_str(obj.get("last_name")),
+        "title": _coerce_str(obj.get("title")),
         "email": email,
         "company_name": business["company_name"],
-        "company_description": (obj.get("company_description") or "").strip(),
+        "company_description": _coerce_str(obj.get("company_description")),
+        "company_facts": _company_facts(obj, business),
         "website_url": business["website_url"],
         "ejentic_service": business.get("ejentic_service", ""),  # ICP tag -> pitch
     }
+    # FIELDS now includes company_facts (see core/leads.py); services/specific_detail
+    # are intentionally dropped here — they live on only through the assembled facts.
     return {k: lead.get(k, "") for k in FIELDS}
 
 

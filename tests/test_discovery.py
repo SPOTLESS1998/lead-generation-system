@@ -46,11 +46,17 @@ class FakeProc:
 SCRAPE_CALLS = []   # every Firecrawl URL requested, in order
 
 # One "OPERATIONAL" place with a website unless noted.
-def place(name, site=None, status="OPERATIONAL"):
+def place(name, site=None, status="OPERATIONAL", rating=None, reviews=None, types=None):
     p = {"displayName": {"text": name}, "businessStatus": status,
          "formattedAddress": "Lagos", "nationalPhoneNumber": "0800"}
     if site is not None:
         p["websiteUri"] = site
+    if rating is not None:
+        p["rating"] = rating
+    if reviews is not None:
+        p["userRatingCount"] = reviews
+    if types is not None:
+        p["types"] = types
     return p
 
 
@@ -65,6 +71,8 @@ MAPS = {
         place("Beta Books", "https://www.betabooks.com/"),          # dup domain -> deduped
         place("NoEmail Corp", "https://noemail.ng/"),               # no email anywhere -> skipped
     ],
+    "QRATED": [place("Rated Co", "https://rated.ng/", rating=4.8, reviews=210,
+                     types=["accounting", "point_of_interest"])],   # strong rating -> review signal
     "QFAIL": "__fail__",                                            # Maps returns a failure envelope
 }
 
@@ -96,9 +104,12 @@ def fake_run(cmd, capture_output=True, text=True, timeout=None):
 def fake_generate_json(cfg, prompt, retries=1):
     # Pull the first real email out of the prompt's embedded website text.
     m = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", prompt)
+    # services is returned as a LIST on purpose — exercises _coerce_str in _extract_lead.
     return ({"email": m.group(0) if m else "",
              "first_name": "", "last_name": "", "title": "",
-             "company_description": "A test firm."}, "fake")
+             "company_description": "A test firm.",
+             "services": ["audit", "payroll"],
+             "specific_detail": "serves Lagos SMEs"}, "fake")
 
 
 # --------------------------------------------------------------------------
@@ -121,6 +132,9 @@ def test_helpers():
           discovery._loads_tolerant('log line\n{"a": 1}\ntail') == {"a": 1})
     check("_clean_email strips trailing period", discovery._clean_email("a@b.com.") == "a@b.com")
     check("_clean_email strips mailto + angle brackets", discovery._clean_email("mailto:<a@b.com>") == "a@b.com")
+    check("_coerce_str flattens a list", discovery._coerce_str(["a", "b", ""]) == "a, b")
+    check("_coerce_str trims a string", discovery._coerce_str("  x ") == "x")
+    check("_coerce_str handles None", discovery._coerce_str(None) == "")
 
 
 def base_cfg(**overrides):
@@ -268,6 +282,53 @@ def test_provider_order():
           ai._provider_order({}) == ["freellmapi", "gemini", "nvidia"])
 
 
+def test_maps_carries_review_fields():
+    print("\n[maps: field mask + rating/review_count/types carried onto the business]")
+    check("field mask requests rating", "places.rating" in discovery.MAPS_FIELD_MASK)
+    check("field mask requests userRatingCount", "places.userRatingCount" in discovery.MAPS_FIELD_MASK)
+    check("field mask requests types", "places.types" in discovery.MAPS_FIELD_MASK)
+    biz = discovery._maps_search({"query": "QRATED"}, 10, "GOOGLE_MAPS_TEXT_SEARCH")
+    check("one rated business returned", len(biz) == 1)
+    b = biz[0] if biz else {}
+    check("rating carried onto business", b.get("rating") == 4.8)
+    check("review_count carried onto business", b.get("review_count") == 210)
+    check("types carried onto business", "accounting" in (b.get("types") or []))
+
+
+def test_review_signal_gating():
+    print("\n[review signal: only strong ratings surface, never low ones]")
+    check("strong 4.8/210 -> signal", bool(discovery._review_signal({"rating": 4.8, "review_count": 210})))
+    check("high rating but <15 reviews -> no signal",
+          discovery._review_signal({"rating": 4.9, "review_count": 5}) == "")
+    check("low rating with volume -> no signal (never damage the pitch)",
+          discovery._review_signal({"rating": 2.4, "review_count": 200}) == "")
+    check("missing rating -> no signal", discovery._review_signal({}) == "")
+    sig = discovery._review_signal({"rating": 4.8, "review_count": 210})
+    check("signal is truthful + specific", "4.8" in sig and "210" in sig)
+
+
+def test_extraction_and_facts():
+    print("\n[extraction: services/detail coerced into company_facts; gated review signal]")
+    rated = {"company_name": "Rated Co", "website_url": "https://rated.ng/",
+             "ejentic_service": "AI Lead Generation",
+             "rating": 4.8, "review_count": 210, "types": ["accounting"]}
+    lead = discovery._extract_lead(base_cfg(), rated, "Rated Co. Email info@rated.ng. We do audits.")
+    check("lead built", lead is not None)
+    check("lead keys == FIELDS", set(lead.keys()) == set(FIELDS))
+    check("company_description preserved", lead["company_description"] == "A test firm.")
+    facts = lead["company_facts"]
+    check("company_facts is a string", isinstance(facts, str))
+    check("services list coerced into facts", "audit" in facts and "payroll" in facts)
+    check("specific_detail in facts", "Lagos SMEs" in facts)
+    check("review signal present for 4.8/210", "210" in facts and "review" in facts.lower())
+    # A low-rated business must NOT leak its rating into the facts.
+    low = {"company_name": "Meh Co", "website_url": "https://meh.ng/",
+           "rating": 2.4, "review_count": 200, "types": []}
+    low_facts = discovery._extract_lead(base_cfg(), low, "Meh Co. info@meh.ng. We do stuff.")["company_facts"]
+    check("low-rated facts omit any review mention", "review" not in low_facts.lower())
+    check("low-rated facts still carry services", "audit" in low_facts)
+
+
 def main():
     # Patch the two external seams.
     discovery.subprocess.run = fake_run
@@ -282,6 +343,9 @@ def main():
     test_config_defaults()
     test_query_specs()
     test_segments()
+    test_maps_carries_review_fields()
+    test_review_signal_gating()
+    test_extraction_and_facts()
     test_provider_order()
 
     print(f"\n{'='*50}\nRESULT: {PASS} passed, {FAIL} failed\n{'='*50}")
