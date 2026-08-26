@@ -14,6 +14,11 @@ data/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+# Stray extension-less state DBs if something ever runs state.connect("demo")
+# from the repo root instead of the proper data/<client>/state.sqlite path.
+/demo
+/demo-wal
+/demo-shm
 pending_leads.json
 pending_leads.json.bak
 
