@@ -17,6 +17,8 @@ sys.path.insert(0, ROOT)
 
 from core import ai          # noqa: E402
 
+ai._ANTHROPIC_RETRY_BACKOFF = 0   # don't actually sleep between retries in tests
+
 PASS = FAIL = 0
 
 
@@ -71,6 +73,7 @@ def fake_post(status=200, payload=None):
         CAP["url"] = url
         CAP["headers"] = headers or {}
         CAP["body"] = json or {}
+        CAP["calls"] = CAP.get("calls", 0) + 1
         return FakeResp(status, default if payload is None else payload)
 
     return _post
@@ -184,6 +187,57 @@ check("token: ANTHROPIC_AUTH_TOKEN is used when API key is absent",
       CAP["headers"].get("authorization") == "Bearer sk-router-token")
 check("token: it is also sent as x-api-key", CAP["headers"].get("x-api-key") == "sk-router-token")
 os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
+
+
+# --------------------------------------------------------------------------
+# best-effort retry/backoff: a flaky/throttling proxy is retried, then fails over
+# --------------------------------------------------------------------------
+clear_env()
+set_key("sk-ant-test")
+
+# (a) 200-with-empty-content (AgentRouter's throttling tell) is retried; a good
+#     response on the next attempt wins.
+_seq = [(200, {"content": [], "usage": {}}),
+        (200, {"content": [{"type": "text", "text": "recovered"}],
+               "usage": {"input_tokens": 2, "output_tokens": 3}})]
+_state = {"i": 0}
+
+
+def _seq_post(url, headers=None, json=None, timeout=None):
+    CAP["calls"] = CAP.get("calls", 0) + 1
+    st, pl = _seq[min(_state["i"], len(_seq) - 1)]
+    _state["i"] += 1
+    return FakeResp(st, pl)
+
+
+CAP["calls"] = 0
+ai.requests.post = _seq_post
+text, usage = ai._anthropic_chat({"anthropic_attempts": 2}, "x")
+check("retry: an empty 200 is retried; a later success wins", text == "recovered")
+check("retry: it took exactly two attempts", CAP["calls"] == 2)
+
+# (b) On the OFFICIAL API a 401 is a real auth failure — terminal, no retry.
+CAP["calls"] = 0
+ai.requests.post = fake_post(401, {"error": "bad key"})
+try:
+    ai._anthropic_chat({"anthropic_attempts": 3}, "x")
+    check("retry: official 401 raises", False)
+except RuntimeError:
+    check("retry: official 401 raises", True)
+check("retry: official 401 is NOT retried (single call)", CAP["calls"] == 1)
+
+# (c) Against a proxy, 401 is treated as throttling — retried up to `attempts`, then
+#     raised so generate() fails over to the free chain.
+CAP["calls"] = 0
+os.environ["ANTHROPIC_BASE_URL"] = "https://agentrouter.org"
+ai.requests.post = fake_post(401, {"error": "invalid token"})
+try:
+    ai._anthropic_chat({"anthropic_attempts": 3}, "x")
+    check("retry: proxy 401 raises after retries", False)
+except RuntimeError:
+    check("retry: proxy 401 raises after retries", True)
+check("retry: proxy 401 is retried up to attempts (3 calls)", CAP["calls"] == 3)
+os.environ.pop("ANTHROPIC_BASE_URL", None)
 
 
 # --------------------------------------------------------------------------

@@ -176,6 +176,10 @@ def _nvidia_chat(cfg, prompt, temperature=0.4, max_tokens=400):
     return data["choices"][0]["message"]["content"].strip(), _norm_usage(data.get("usage"))
 
 
+_ANTHROPIC_ATTEMPTS = 2          # total tries against a possibly-throttling endpoint
+_ANTHROPIC_RETRY_BACKOFF = 0.6   # seconds between tries, grows per attempt (0 in tests)
+
+
 def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=1024):
     """Call the Anthropic Messages API — real Claude, METERED (spends credits/quota).
 
@@ -206,33 +210,49 @@ def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=1024):
     # 401 "unauthorized client detected"; identify as the Claude CLI (this IS Claude
     # tooling). Harmless against the official API, which does not gate on User-Agent.
     user_agent = os.environ.get("ANTHROPIC_USER_AGENT") or "claude-cli/1.0.60 (external, cli)"
-    resp = requests.post(
-        f"{base}/v1/messages",
-        headers={
-            "x-api-key": api_key,
-            "authorization": f"Bearer {api_key}",   # AgentRouter & other proxies auth via Bearer
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-            "user-agent": user_agent,
-        },
-        json={
-            "model": model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": [{"role": "user", "content": prompt}],
-        },
-        timeout=60,
-    )
-    if resp.status_code != 200:
-        raise RuntimeError(f"Anthropic API {resp.status_code}: {resp.text[:200]}")
-    data = resp.json()
-    parts = [b.get("text", "") for b in (data.get("content") or []) if b.get("type") == "text"]
-    text = "".join(parts).strip()
-    if not text:
-        raise RuntimeError("Anthropic returned empty content")
-    u = data.get("usage") or {}
-    it, ot = int(u.get("input_tokens") or 0), int(u.get("output_tokens") or 0)
-    return text, {"prompt_tokens": it, "completion_tokens": ot, "total_tokens": it + ot}
+    # A custom base URL means we're pointed at a proxy (AgentRouter), not the official
+    # API. That matters for retries below: AgentRouter's FREE quota throttles under load
+    # by returning 200-with-empty-content and even 401 "invalid token" — transient, worth
+    # a quick retry. On the OFFICIAL API a 401/403 is a real auth failure — terminal.
+    is_proxy = base != "https://api.anthropic.com"
+    headers = {
+        "x-api-key": api_key,
+        "authorization": f"Bearer {api_key}",   # AgentRouter & other proxies auth via Bearer
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+        "user-agent": user_agent,
+    }
+    body = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    # Best-effort premium: retry a flaky/throttling proxy a couple of times, then raise
+    # so generate() fails over to the free chain. Kept small so a down proxy adds little
+    # latency to a pipeline run. Per-call override via cfg["anthropic_attempts"].
+    attempts = max(1, int(cfg.get("anthropic_attempts") or _ANTHROPIC_ATTEMPTS))
+    last_err = None
+    for i in range(attempts):
+        resp = requests.post(f"{base}/v1/messages", headers=headers, json=body, timeout=60)
+        if resp.status_code == 200:
+            data = resp.json()
+            parts = [b.get("text", "") for b in (data.get("content") or []) if b.get("type") == "text"]
+            text = "".join(parts).strip()
+            if text:
+                u = data.get("usage") or {}
+                it, ot = int(u.get("input_tokens") or 0), int(u.get("output_tokens") or 0)
+                return text, {"prompt_tokens": it, "completion_tokens": ot, "total_tokens": it + ot}
+            # 200 but no text = a proxy throttling tell. Retry, then fail over.
+            last_err = RuntimeError("Anthropic returned empty content")
+        else:
+            last_err = RuntimeError(f"Anthropic API {resp.status_code}: {resp.text[:200]}")
+            # Terminal auth failure on the official API — no point retrying.
+            if resp.status_code in (401, 403) and not is_proxy:
+                raise last_err
+        if i < attempts - 1:
+            time.sleep(_ANTHROPIC_RETRY_BACKOFF * (i + 1))
+    raise last_err
 
 
 # Every provider is callable as fn(cfg, prompt); each raises if its creds are
