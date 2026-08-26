@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS leads (
     title        TEXT,
     company_name TEXT,
     website_url  TEXT,
+    company_description TEXT,          -- AI one-liner: what this company does
+    company_facts       TEXT,          -- richer grounding facts for the cold-email opener
     niche        TEXT,
     status       TEXT NOT NULL DEFAULT 'new',
     created_at   TEXT NOT NULL,
@@ -182,6 +184,15 @@ def _migrate(conn):
         conn.execute("ALTER TABLE sends ADD COLUMN message_id TEXT")
     # Index built here (not in _SCHEMA) so it never runs before the column exists.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sends_message_id ON sends(client, message_id)")
+
+    # Grounding facts for the cold-email copy (added after Tier 2): the AI one-line
+    # company_description and the richer company_facts (services + a verifiable detail
+    # + review signal). Pre-existing leads tables gain them here without losing data.
+    lead_cols = {r["name"] for r in conn.execute("PRAGMA table_info(leads)").fetchall()}
+    for col in ("company_description", "company_facts"):
+        if col not in lead_cols:
+            conn.execute(f"ALTER TABLE leads ADD COLUMN {col} TEXT")
+
     conn.commit()
 
 
@@ -191,11 +202,13 @@ def upsert_lead(conn, client, lead, niche=None, status="queued"):
     """Insert a lead if new; leave an existing lead's status untouched."""
     conn.execute(
         """INSERT INTO leads
-               (client, email, first_name, last_name, title, company_name, website_url, niche, status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               (client, email, first_name, last_name, title, company_name, website_url,
+                company_description, company_facts, niche, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(client, email) DO NOTHING""",
         (client, lead.get("email"), lead.get("first_name"), lead.get("last_name"),
          lead.get("title"), lead.get("company_name"), lead.get("website_url"),
+         lead.get("company_description"), lead.get("company_facts"),
          niche, status, _now()),
     )
     conn.commit()

@@ -11,8 +11,11 @@ import csv
 
 FIELDS = ["first_name", "last_name", "title", "email",
           "company_name", "company_description", "website_url",
-          "ejentic_service"]   # which Ejentic offering this prospect was matched to
+          "ejentic_service",   # which Ejentic offering this prospect was matched to
                                # (auto-discovery sets it; CSV rows may leave it blank)
+          "company_facts"]     # richer grounding facts for the opener (services listed +
+                               # one verifiable detail + a review signal); auto-discovery
+                               # fills it, a missing CSV column safely degrades to ""
 
 
 def _looks_like_email(value):
