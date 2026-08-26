@@ -22,15 +22,28 @@ from core.ai import generate_json
 _PLACEHOLDERS = ("[Your Name]", "[Your name]", "[YOUR NAME]", "[Name]", "[name]",
                  "[Your Company]", "[Company]", "[your name]")
 
+# Closing words that count as a real sign-off; if none is present we add one.
+_SIGNOFFS = ("best,", "best regards", "regards,", "cheers,", "thanks,", "thank you,",
+             "sincerely,", "warmly,", "talk soon", "speak soon")
+
 
 def finalize_body(body, sender_name, magnet_url=None):
     """Shared safety net for any body (fresh draft OR rewrite): kill placeholder
-    signatures and guarantee the promised audit link is actually present."""
+    signatures, guarantee the promised audit link is present, and guarantee a real
+    sign-off. A draft that drops the sign-off otherwise ships looking unfinished and
+    gets marked down — fixing it here covers BOTH the draft and the revise path."""
     body = (body or "").strip()
     for ph in _PLACEHOLDERS:
         body = body.replace(ph, sender_name)
     if magnet_url and magnet_url not in body:
         body = f"{body}\n\n{magnet_url}"
+    # Append a sign-off only when the body has neither a closing word nor the
+    # sender's name near the end — never double an existing one. An empty body is
+    # left empty on purpose so the caller's emptiness check still fires.
+    low = body.lower()
+    if body and sender_name and (not any(s in low for s in _SIGNOFFS)
+                                 or sender_name.lower() not in low):
+        body = f"{body}\n\nBest,\n{sender_name}"
     return body
 
 
@@ -48,6 +61,7 @@ def copy_instructions(sender_name, magnet_url):
 - Sentence 1 — a specific, TRUE observation about THEIR business, drawn only from the facts you were given (never a generic compliment, never an invented fact).
 - Sentence 2 — the concrete operational pain that observation implies, in plain words.
 - Sentence 3 — one believable outcome tied to the offer (a plausible number or timeframe beats hype).
+- Never state a statistic as a fact about THEIR current business unless it appears in the facts you were given (do NOT assert things like "you lose 30% of leads" or "you waste 10 hours a week"). If you need a number to size the problem, frame it as a benchmark ("firms your size typically..."). The ONE allowed projection is the outcome in Sentence 3.
 - {link_rule}
 - End with ONE specific, low-friction question that proposes a concrete next step — never "let me know" or "let me know your thoughts".
 - 60-90 words total. Read like a sharp human wrote it in two minutes for this one person.
@@ -59,8 +73,11 @@ Subject line: specific and curiosity-driving, UNDER 6 words, no clickbait, and w
 
 RUBRIC = """Score 1-10, where 10 is a top-1% cold email a sharp founder would actually reply to.
 Most competent first drafts are a 6 or 7 — reserve 8+ for genuinely specific, human copy.
+Reward copy where sentence 1 cites a concrete, verifiable fact about THIS prospect (a real
+service they list, a named detail, genuine review volume) rather than a generic guess.
 Deduct hard for any of these:
 - a generic sentence that could be sent to any company (not specific to THIS prospect)
+- any statistic stated as the prospect's CURRENT reality that wasn't given as a fact (an invented "you lose X%" / "you waste Y hours") — a fabricated number is worse than no number
 - hype, vague value, or an unbelievable claim
 - AI/robotic tells or buzzwords ("I hope this finds you well", "leverage", "seamless", "cutting-edge", "in today's...")
 - wrong length (must be 60-90 words), a missing https audit link, or a weak/vague CTA ("let me know")
@@ -71,13 +88,14 @@ def score(cfg, lead, subject, body, brief=""):
     """Judge one draft. Returns {"score": int 1-10, "issues": [...], "fix_hint": str},
     or None if the judge is unavailable (caller then ships the draft unscored)."""
     wc = len((body or "").split())
+    facts = lead.get("company_facts") or lead.get("company_description") or ""
     prompt = f"""You are a ruthless cold-email editor working for {cfg.get('client_name','the agency')}.
 Judge this cold email. Be specific and hard to impress.
 
 PROSPECT (the email must be specifically about THIS business, not generic):
 Name: {lead.get('first_name','')} {lead.get('last_name','')}
 Company: {lead.get('company_name','')}
-What we know: {lead.get('company_description','')}
+What we actually know about them (the email must be grounded in THESE facts, and must not invent others): {facts}
 
 STRATEGY BRIEF the writer was given:
 {brief or '(none)'}
@@ -110,11 +128,12 @@ def revise(cfg, lead, subject, body, critique, magnet_url, sender_name):
     """Rewrite a draft to address the editor's critique. Returns (subject, body)."""
     fix_hint = (critique or {}).get("fix_hint") or "Make it more specific and human."
     issues = ", ".join((critique or {}).get("issues") or []) or "generic / not specific enough"
+    facts = lead.get("company_facts") or lead.get("company_description") or ""
     prompt = f"""You are a world-class B2B cold-email copywriter for {cfg.get('client_name','the agency')}.
 A strict editor rejected the draft below. Rewrite it so it fully earns a reply. Keep what already works.
 
 PROSPECT: {lead.get('first_name','')} {lead.get('last_name','')} at {lead.get('company_name','')}
-What we know about them: {lead.get('company_description','')}
+What we actually know about them (ground it in THESE facts; keep the specific one the draft already cites, don't invent new ones): {facts}
 
 EDITOR'S ISSUES: {issues}
 EDITOR'S #1 FIX: {fix_hint}

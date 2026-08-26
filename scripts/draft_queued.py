@@ -7,9 +7,9 @@ re-drafts them WITHOUT re-running discovery, so a transient outage doesn't cost
 a fresh Google Maps + Firecrawl scrape of the whole prospect list.
 
 Scope: leads with status='queued' that don't already have a pending draft.
-The AI-written company_description isn't persisted (it only lives in memory
-during a discovery run), so we fall back to the company name — still plenty of
-signal alongside the stored ICP service tag (the lead's niche).
+The grounding facts (company_facts / company_description) are persisted at
+discovery time, so a re-draft reads the SAME real facts the first pass had; we
+still fall back to the company name for rows saved before facts were stored.
 
 Run:  venv/bin/python -u scripts/draft_queued.py
 """
@@ -37,19 +37,23 @@ MAX_PER_RUN = 50
 
 def _draft_lead_view(row):
     """Rebuild the lead dict shape generate_strategy/generate_copy expect from a
-    stored leads row. Coerce NULLs; supply gentle fallbacks for the fields that
-    aren't persisted (company_description) or are blank on role mailboxes (name)."""
+    stored leads row. Coerce NULLs; prefer the persisted grounding facts, falling
+    back to the company name for old rows / blank name on role mailboxes."""
     first = (row["first_name"] or "").strip()
     company = row["company_name"] or ""
+    # Prefer the real scraped facts saved at discovery time; fall back to the
+    # one-line description, then to the (often descriptive) company name so rows
+    # saved before facts existed — and role mailboxes — still draft with signal.
+    facts = (row["company_facts"] or "").strip()
+    desc = (row["company_description"] or "").strip()
     return {
         "email": row["email"],
         "first_name": first or "there",       # generic mailbox -> greeting reads 'Hi there,'
         "last_name": (row["last_name"] or "").strip(),
         "title": (row["title"] or "").strip(),
         "company_name": company,
-        # The real AI description isn't stored; the (often very descriptive)
-        # company name plus the service tag below carry the industry inference.
-        "company_description": company,
+        "company_description": desc or company,
+        "company_facts": facts or desc or company,
         "ejentic_service": row["niche"] or "",
     }
 
@@ -66,7 +70,8 @@ def main():
     run_id = obs.new_run_id()   # groups every event this run emits in the ledger
 
     rows = conn.execute(
-        "SELECT email, first_name, last_name, title, company_name, website_url, niche "
+        "SELECT email, first_name, last_name, title, company_name, website_url, niche, "
+        "company_description, company_facts "
         "FROM leads WHERE client=? AND status='queued' ORDER BY company_name",
         (client,),
     ).fetchall()

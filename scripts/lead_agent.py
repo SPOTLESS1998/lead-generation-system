@@ -38,6 +38,11 @@ def generate_strategy(cfg, lead):
         if service else ""
     )
 
+    # The real, scraped facts about this prospect (services they list + one verifiable
+    # detail + a review signal, assembled at discovery time). Fall back to the older
+    # one-line description, then to nothing — so CSV leads and old rows still work.
+    facts = (lead.get("company_facts") or lead.get("company_description") or "").strip()
+
     prompt = f"""You are the lead strategist for {cfg['client_name']}, an AI automation agency
     whose offerings include Localized Multilingual Support Agents, AI Lead Generation Systems,
     Air-Gapped Internal Knowledge Bases (RAG), and Enterprise Workflow Automation.{service_line}
@@ -45,7 +50,7 @@ def generate_strategy(cfg, lead):
     - Name: {lead.get('first_name','')} {lead.get('last_name','')}
     - Title: {lead.get('title','')}
     - Company: {lead.get('company_name','')}
-    - What we know about them: {lead.get('company_description','')}
+    - What we actually know about them: {facts}
 
     Using ONLY the facts above (never invent details), write a tight brief the copywriter will
     turn into a cold email. Fill in each line with something specific to THIS prospect:
@@ -69,12 +74,21 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     # post-generation safety net below use the same real sender identity.
     sender_name = (cfg.get("from_name") or cfg.get("client_name") or "our team").strip()
 
+    # Give the copywriter the real facts directly (not just the digested brief) so
+    # sentence 1 can cite something true and specific about THIS prospect.
+    facts = (lead.get("company_facts") or lead.get("company_description") or "").strip()
+    facts_block = (
+        f"WHAT WE ACTUALLY KNOW ABOUT THEM (ground sentence 1 in this; do not invent other facts):\n    {facts}\n"
+        if facts else ""
+    )
+
     prompt = f"""You are a world-class B2B cold-email copywriter writing ONE email for {cfg['client_name']}.
 
     PROSPECT:
     Name: {lead.get('first_name','')} {lead.get('last_name','')}
     Company: {lead.get('company_name','')}
 
+    {facts_block}
     STRATEGY BRIEF — ground every line in this; do not invent facts beyond it:
     {strategy_brief}
 

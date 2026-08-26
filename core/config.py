@@ -48,7 +48,7 @@ DEFAULTS = {
             "enabled": True,
             "min_score": 8,                  # 1-10; drafts below this get a rewrite pass
             "max_revisions": 1,              # rewrite passes before accepting the best so far
-            "best_of": 1,                    # draft N candidates, keep the highest-scoring (1 = off)
+            "best_of": 2,                    # draft N candidates, keep the highest-scoring (more robust on a flaky free chain than a longer serial revise chain)
         },
     },
     "demo_mode": False,                      # False = real AI generation

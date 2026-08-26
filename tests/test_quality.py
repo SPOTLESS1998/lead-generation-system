@@ -32,6 +32,10 @@ def check(name, cond):
 LEAD = {"first_name": "Ada", "last_name": "Obi",
         "company_name": "Acme", "company_description": "sells widgets"}
 
+# Same prospect, but now carrying the richer scraped facts the copy is grounded in.
+LEAD_FACTS = {**LEAD,
+              "company_facts": "Services: solar install. Notable: serves Maitama landlords."}
+
 
 def qcfg(gate):
     return {"client": "acme", "client_name": "Ejentic AI",
@@ -83,7 +87,7 @@ def judge_down(*a, **k):
 # finalize_body — the safety net every body passes through
 # --------------------------------------------------------------------------
 check("finalize_body strips surrounding whitespace",
-      quality.finalize_body("  \n Hi there \n  ", "X", None) == "Hi there")
+      quality.finalize_body("  \n Hi there\n\nBest,\nX \n  ", "X", None) == "Hi there\n\nBest,\nX")
 check("finalize_body swaps [Your Name] placeholder for the real sender",
       quality.finalize_body("Best,\n[Your Name]", "Ejentic AI", None) == "Best,\nEjentic AI")
 
@@ -95,6 +99,17 @@ already = quality.finalize_body("Hi\n\n" + URL, "Ejentic AI", URL)
 check("finalize_body does not duplicate an already-present link", already.count(URL) == 1)
 check("finalize_body appends nothing when magnet_url is None",
       quality.finalize_body("Hi\n\nBest,\nEjentic AI", "Ejentic AI", None).count("http") == 0)
+
+# Sign-off guarantee: a body that lost its sign-off gets one; a present one is never doubled.
+check("finalize_body appends a missing sign-off",
+      quality.finalize_body("Hi Ada,\n\nThis is the whole pitch.", "Ejentic AI", None)
+      .endswith("Best,\nEjentic AI"))
+check("finalize_body does not double an existing sign-off",
+      quality.finalize_body("Hi Ada,\n\nPitch.\n\nBest,\nEjentic AI", "Ejentic AI", None)
+      .count("Best,") == 1)
+check("finalize_body keeps the link above an appended sign-off",
+      quality.finalize_body("Hi Ada,\n\nPitch.\n\n" + URL, "Ejentic AI", URL)
+      .endswith(URL + "\n\nBest,\nEjentic AI"))
 
 
 # --------------------------------------------------------------------------
@@ -111,6 +126,10 @@ check("copy_instructions has no link rule when there is no link",
       "Put this exact audit link" not in no_link)
 check("copy_instructions carries the real sign-off name", "Ejentic AI" in with_link)
 check("copy_instructions enforces the 60-90 word budget", "60-90 words" in with_link)
+check("copy_instructions forbids inventing a current-state stat",
+      "Never state a statistic as a fact about THEIR" in with_link)
+check("copy_instructions still allows the one projected outcome number",
+      "The ONE allowed projection" in with_link)
 
 
 # --------------------------------------------------------------------------
@@ -132,14 +151,23 @@ check("score returns None on a non-numeric score", quality.score(qcfg({}), LEAD,
 quality.generate_json = judge_down
 check("score returns None when the judge raises", quality.score(qcfg({}), LEAD, "S", "b", "") is None)
 
+# The judge must see the REAL facts, or it scores "specific to THIS prospect" blind.
+_cap = {}
+def _cap_score(cfg, p):
+    _cap["p"] = p
+    return {"score": 7, "issues": [], "fix_hint": ""}, "j"
+quality.generate_json = _cap_score
+quality.score(qcfg({}), LEAD_FACTS, "S", "a body", "brief")
+check("score prompt is grounded in company_facts", "Maitama landlords" in _cap["p"])
+
 
 # --------------------------------------------------------------------------
 # revise — rewrites, finalizes, rejects an empty body
 # --------------------------------------------------------------------------
-quality.generate_json = lambda cfg, p: ({"subject": "New subj", "body": "New body, specific."}, "r")
+quality.generate_json = lambda cfg, p: ({"subject": "New subj", "body": "New body, specific.\n\nBest,\nEjentic AI"}, "r")
 ns, nb = quality.revise(qcfg({}), LEAD, "Old", "Old body", {"issues": ["x"], "fix_hint": "y"}, None, "Ejentic AI")
 check("revise returns the rewritten subject", ns == "New subj")
-check("revise finalizes the rewritten body", nb == "New body, specific.")
+check("revise finalizes the rewritten body", nb == "New body, specific.\n\nBest,\nEjentic AI")
 
 quality.generate_json = lambda cfg, p: ({"subject": "S", "body": "   "}, "r")
 try:
@@ -147,6 +175,15 @@ try:
     check("revise raises on an empty rewritten body", False)
 except RuntimeError:
     check("revise raises on an empty rewritten body", True)
+
+# The reviser must also see the facts, or "keep what works" quietly drops the cited detail.
+_cap2 = {}
+def _cap_rev(cfg, p):
+    _cap2["p"] = p
+    return {"subject": "S", "body": "Hi Ada,\n\nSpecific pitch.\n\nBest,\nEjentic AI"}, "r"
+quality.generate_json = _cap_rev
+quality.revise(qcfg({}), LEAD_FACTS, "Old", "Old body", {"issues": [], "fix_hint": ""}, None, "Ejentic AI")
+check("revise prompt is grounded in company_facts", "Maitama landlords" in _cap2["p"])
 
 
 # --------------------------------------------------------------------------
@@ -167,12 +204,12 @@ check("high first score: ships the draft as-is", out == ("S1", "Body 1", "provA"
 check("high first score: drafts once, no revision", df.calls == 1)
 
 # C) Enabled, low then high → one revision, the higher version kept.
-quality.generate_json = make_gj(scores=[6, 9], revise_result=("Revised subj", "Revised body, very specific."))
+quality.generate_json = make_gj(scores=[6, 9], revise_result=("Revised subj", "Revised body, very specific.\n\nBest,\nEjentic AI"))
 df = DraftFn([("Draft subj", "Draft body", "free-prov")])
 out = quality.draft_and_polish(qcfg({"enabled": True, "min_score": 8, "max_revisions": 1}),
                                LEAD, "brief", None, df)
 check("low score: keeps the revised subject", out[0] == "Revised subj")
-check("low score: keeps the revised body", out[1] == "Revised body, very specific.")
+check("low score: keeps the revised body", out[1] == "Revised body, very specific.\n\nBest,\nEjentic AI")
 check("low score: provider carried from the scored candidate", out[2] == "free-prov")
 
 # D) Enabled but judge all-None → ships unscored (first candidate).
