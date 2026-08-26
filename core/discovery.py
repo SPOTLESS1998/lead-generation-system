@@ -38,7 +38,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 
 from core.leads import FIELDS, _looks_like_email
-from core.ai import generate_json
+from core.ai import generate_json, DEFAULT_PROVIDERS
+from core import budget
 
 # Composio action slugs (overridable per client via the "discovery" config block).
 DEFAULT_MAPS_SLUG = "GOOGLE_MAPS_TEXT_SEARCH"
@@ -428,23 +429,43 @@ def _query_specs(cfg):
     return [{"query": q, "segment": "", "service": ""} for q in _queries(cfg)]
 
 
-def _process_business(client_cfg, business, fc_slug, scrape_pages):
+def _process_business(ext_cfg, business, fc_slug, scrape_pages):
     """Scrape one business (homepage-first, early-stop on email) and extract a lead.
 
     Self-contained so it can run in a worker thread: it touches only its own
     `business` dict and module-level pure helpers. Returns (business, lead|None).
+    `ext_cfg` is the provider cfg for extraction (premium-first — see _extraction_cfg).
     """
     lead = None
     for url in _candidate_urls(business["website_url"], scrape_pages):
         page_md = _firecrawl_markdown(url, fc_slug)
         if page_md:
-            lead = _extract_lead(client_cfg, business, page_md)
+            lead = _extract_lead(ext_cfg, business, page_md)
             if lead and _looks_like_email(lead["email"]):
                 break  # got a usable email — stop spending scrapes on this site
     return business, lead
 
 
-def load_leads(client_cfg):
+def _extraction_cfg(cfg, conn=None):
+    """Provider cfg for the extraction LLM call.
+
+    Extraction is a HARD dependency of discovery: if it can't run, we get zero leads.
+    So it must not depend solely on the free chain (which can be entirely down — e.g. a
+    free model reaching end-of-life). Prefer the reliable premium provider first, keeping
+    the free chain as fallback, exactly like the copy path. We reuse budget.copy_cfg when a
+    db handle is available so the daily premium cap is honored; without one (e.g. a preview)
+    we still prefer premium when it's simply enabled — extraction volume is far below copy spend.
+    """
+    if conn is not None:
+        return budget.copy_cfg(conn, cfg)
+    if budget.premium_enabled(cfg):
+        base = [p for p in (cfg.get("providers") or DEFAULT_PROVIDERS) if p != "anthropic"]
+        return {**cfg, "providers": ["anthropic"] + base,
+                "anthropic_model": budget.premium_model(cfg)}
+    return cfg
+
+
+def load_leads(client_cfg, conn=None):
     """Discover leads via Maps -> Firecrawl -> AI, in parallel. Returns (leads, skipped).
 
     Two concurrent phases (see DEFAULT_MAX_WORKERS): all Maps queries run at once,
@@ -454,6 +475,9 @@ def load_leads(client_cfg):
     `skipped` counts businesses that were found but could not be turned into a
     usable lead (no website, scrape failed, or — when require_email is set — no
     email could be extracted), mirroring core/leads.py's skip semantics.
+
+    `conn` (optional) lets extraction honor the client's premium daily cap via
+    budget.copy_cfg; without it, premium is still preferred when simply enabled.
     """
     disc = client_cfg.get("discovery") or {}
     maps_slug = disc.get("maps_search_slug") or DEFAULT_MAPS_SLUG
@@ -463,6 +487,12 @@ def load_leads(client_cfg):
     require_email = disc.get("require_email", True)
     scrape_pages = disc.get("scrape_pages", ["", "contact"])
     workers = max(1, int(disc.get("max_workers", DEFAULT_MAX_WORKERS)))
+
+    # Extraction turns each scraped page into a lead — resolve a premium-first provider
+    # chain for it so a fully-down free chain can't zero out the whole run.
+    ext_cfg = _extraction_cfg(client_cfg, conn)
+    print(f"   🧠 Extraction LLM chain: "
+          f"{' → '.join(ext_cfg.get('providers') or DEFAULT_PROVIDERS)}")
 
     specs = _query_specs(client_cfg)
     if not specs:
@@ -501,7 +531,7 @@ def load_leads(client_cfg):
     # --- Phase 2: scrape + extract every unique business concurrently. ---
     leads, skipped = [], 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(_process_business, client_cfg, biz, fc_slug, scrape_pages): biz
+        futs = {ex.submit(_process_business, ext_cfg, biz, fc_slug, scrape_pages): biz
                 for biz in unique}
         for fut in as_completed(futs):
             biz = futs[fut]

@@ -147,7 +147,7 @@ def main():
     if cfg.get("lead_source") == "maps_firecrawl":
         from core import discovery
         print_step("🛰️  Auto-sourcing leads (Google Maps → Firecrawl → AI extraction)...")
-        all_leads, skipped = discovery.load_leads(cfg)
+        all_leads, skipped = discovery.load_leads(cfg, conn=conn)
         print_step(f"🔍 Sourced {len(all_leads)} lead(s) "
                    f"({skipped} business(es) skipped: no site/email or scrape failed).")
     elif cfg.get("lead_source") == "yellowpages":
