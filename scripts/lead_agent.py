@@ -55,7 +55,7 @@ def generate_strategy(cfg, lead):
     Using ONLY the facts above (never invent details), write a tight brief the copywriter will
     turn into a cold email. Fill in each line with something specific to THIS prospect:
 
-    OBSERVATION: one specific, verifiable thing about this business — quote a concrete detail from what we know.
+    OBSERVATION: one specific, verifiable, FLATTERING thing about this business — quote a concrete detail from what we know that makes them look good (a strength, specialty, market, or achievement). NEVER open on a negative or operational detail (a complaints line, a support number, a disclaimer, a problem).
     PAIN: the single most costly operational bottleneck that detail implies.
     SERVICE: the one {cfg['client_name']} offering that best relieves it{f" (default to '{service}')" if service else ''}.
     OUTCOME: one believable result of that service, with a plausible number or timeframe — no hype.

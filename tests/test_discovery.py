@@ -307,6 +307,19 @@ def test_review_signal_gating():
     check("signal is truthful + specific", "4.8" in sig and "210" in sig)
 
 
+def test_extraction_prompt_steers_positive():
+    print("\n[extraction prompt: specific_detail must be FLATTERING, never negative/operational]")
+    # This is the fix for the 'bad-detail opener' — the extractor once let a complaints
+    # hotline become the specific_detail, and the pitch then opened on it. The prompt must
+    # now (a) demand a flattering/differentiating fact and (b) explicitly exclude the
+    # negative/operational kind, while still keeping the no-fabrication floor.
+    p = discovery._extraction_prompt("Acme", "https://acme.ng/", "Acme does audits for Lagos SMEs.")
+    check("prompt asks specific_detail to be FLATTERING", "FLATTERING" in p)
+    check("prompt bans negative/operational details", "negative or operational" in p)
+    check("prompt names a complaints line as a thing to avoid", "complaints line" in p)
+    check("prompt still forbids fabrication", "never fabricate" in p and 'use ""' in p.lower())
+
+
 def test_extraction_and_facts():
     print("\n[extraction: services/detail coerced into company_facts; gated review signal]")
     rated = {"company_name": "Rated Co", "website_url": "https://rated.ng/",
@@ -345,6 +358,7 @@ def main():
     test_segments()
     test_maps_carries_review_fields()
     test_review_signal_gating()
+    test_extraction_prompt_steers_positive()
     test_extraction_and_facts()
     test_provider_order()
 

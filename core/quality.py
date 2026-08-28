@@ -68,7 +68,7 @@ def copy_instructions(sender_name, magnet_url):
                      "Do NOT invent or include any link.")
     return f"""Follow this framework exactly:
 - Greet them by first name if one is given; if the name is unknown or a generic mailbox, open with exactly "Hi there," — NEVER write a literal placeholder like "Name" or "[First Name]".
-- Sentence 1 — a specific, TRUE observation about THEIR business, drawn only from the facts you were given (never a generic compliment, never an invented fact).
+- Sentence 1 — a specific, TRUE, FLATTERING observation about THEIR business, drawn only from the facts you were given (never a generic compliment, never an invented fact). Lead with their strongest, most differentiating fact; NEVER open by highlighting a negative or operational detail (a complaints line, a support/error number, a disclaimer, a problem) — that insults the reader.
 - Sentence 2 — the concrete operational pain that observation implies, in plain words.
 - Sentence 3 — one believable outcome tied to the offer (a plausible number or timeframe beats hype).
 - Never state a statistic as a fact about THEIR current business unless it appears in the facts you were given (do NOT assert things like "you lose 30% of leads" or "you waste 10 hours a week"). If you need a number to size the problem, frame it as a benchmark ("firms your size typically..."). The ONE allowed projection is the outcome in Sentence 3.

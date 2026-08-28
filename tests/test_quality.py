@@ -142,6 +142,8 @@ check("copy_instructions forbids inventing a current-state stat",
       "Never state a statistic as a fact about THEIR" in with_link)
 check("copy_instructions still allows the one projected outcome number",
       "The ONE allowed projection" in with_link)
+check("copy_instructions forbids opening on a negative/operational detail",
+      "NEVER open by highlighting a negative or operational detail" in with_link)
 
 
 # --------------------------------------------------------------------------

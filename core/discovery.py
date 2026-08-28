@@ -294,7 +294,7 @@ Return ONLY a JSON object with exactly these keys:
 - "first_name", "last_name", "title": a specific contact person ONLY if the text clearly names one with their role (founder, partner, manager, etc.); otherwise use "" for all three.
 - "company_description": ONE concise sentence (max 25 words) describing what the company does, based only on the text.
 - "services": their specific products/services as a short comma-separated list, drawn ONLY from the text (e.g. "tax audits, payroll, bookkeeping"). Use "" if the text doesn't say.
-- "specific_detail": ONE concrete, verifiable detail clearly true of THIS company from the text — a named product, market, location, client, or a claim they make about themselves — that a stranger could accurately cite back to them. Max 20 words. Do NOT repeat company_description. Use "" if nothing specific stands out.
+- "specific_detail": ONE concrete, verifiable, FLATTERING detail clearly true of THIS company from the text — something that makes them look good and sets them apart: a named product or specialty, a market or neighbourhood they own, a notable client, an award or achievement, years in business, or a proud claim they make about themselves — that a stranger could cite back as a genuine compliment. Max 20 words. Do NOT pick anything negative or operational: a complaints line, a support/error phone number, a disclaimer, a limitation, a problem, or generic contact details. Do NOT repeat company_description. Use "" if nothing positive and specific stands out.
 
 Rules: use ONLY information present in the text; never fabricate an email, a person, a service, or a detail; if unsure, use "".
 Reply with ONLY the JSON object — no prose, no code fence."""

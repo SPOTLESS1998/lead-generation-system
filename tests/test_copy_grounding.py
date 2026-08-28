@@ -111,6 +111,8 @@ def test_generate_strategy_grounds_in_facts():
             "company_facts": "Services: solar. Notable: serves Maitama landlords."}
     lead_agent.generate_strategy(CFG, lead)
     check("strategy prompt includes company_facts", "Maitama landlords" in cap["prompt"])
+    check("strategy OBSERVATION must be flattering, never a negative opener",
+          "NEVER open on a negative or operational detail" in cap["prompt"])
 
 
 # --------------------------------------------------------------------------
