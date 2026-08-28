@@ -16,6 +16,8 @@ calls go through the cfg handed in, so premium-vs-free is already decided by the
 budget check (core/budget.copy_cfg) before we get here.
 """
 
+import re
+
 from core.ai import generate_json
 
 # Template signatures a model sometimes leaves behind; swapped for the real sender.
@@ -33,6 +35,14 @@ def finalize_body(body, sender_name, magnet_url=None):
     sign-off. A draft that drops the sign-off otherwise ships looking unfinished and
     gets marked down — fixing it here covers BOTH the draft and the revise path."""
     body = (body or "").strip()
+    # Greeting safety net (before the placeholder swap): a model told to "greet by
+    # first name" but given none sometimes writes the literal token — "Hi Name,",
+    # "Hi First Name,", "Hi [Name],". Rewrite ONLY that opening greeting to a safe
+    # "Hi there,"; a real name ("Hi Ada,") or an already-safe "Hi there," is untouched.
+    if body:
+        body = re.sub(
+            r'^\s*(?:hi|hello|hey|dear)\s+\[?\{?(?:first[\s_-]*)?name\}?\]?\s*,',
+            'Hi there,', body, count=1, flags=re.IGNORECASE)
     for ph in _PLACEHOLDERS:
         body = body.replace(ph, sender_name)
     if magnet_url and magnet_url not in body:
@@ -57,7 +67,7 @@ def copy_instructions(sender_name, magnet_url):
         link_rule = ("Offer a free personalized AI audit and invite a one-word reply to get it. "
                      "Do NOT invent or include any link.")
     return f"""Follow this framework exactly:
-- Greet them by first name.
+- Greet them by first name if one is given; if the name is unknown or a generic mailbox, open with exactly "Hi there," — NEVER write a literal placeholder like "Name" or "[First Name]".
 - Sentence 1 — a specific, TRUE observation about THEIR business, drawn only from the facts you were given (never a generic compliment, never an invented fact).
 - Sentence 2 — the concrete operational pain that observation implies, in plain words.
 - Sentence 3 — one believable outcome tied to the offer (a plausible number or timeframe beats hype).

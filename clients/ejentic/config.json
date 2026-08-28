@@ -6,7 +6,7 @@
   "unsubscribe_base_url": "http://localhost:5002",
   "copy_provider": "gemini",
   "gemini_model": "gemini-2.5-flash",
-  "nvidia_model": "meta/llama-3.1-70b-instruct",
+  "nvidia_model": "mistralai/mistral-nemotron",
   "freellmapi_model": ["mistral-large-latest", "mistral-medium-latest", "command-a-03-2025", "glm-4.7-flash", "deepseek-v3.2"],
   "copy": {
     "premium": true,

@@ -39,7 +39,7 @@ DEFAULTS = {
     "providers": ["freellmapi", "gemini", "nvidia"],  # LLM fallback order (see core/ai.py)
     "freellmapi_model": "",                  # "" / "auto" = let the gateway auto-route
     "gemini_model": "gemini-2.5-flash",
-    "nvidia_model": "meta/llama-3.1-70b-instruct",
+    "nvidia_model": "mistralai/mistral-nemotron",
     "copy": {                                # premium-copy controls (see core/budget.py)
         "premium": False,                    # True = try real Claude (Anthropic API) FIRST for copy
         "anthropic_model": "claude-opus-4-8",  # which Claude writes the copy when premium is on

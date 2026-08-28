@@ -111,6 +111,17 @@ check("finalize_body keeps the link above an appended sign-off",
       quality.finalize_body("Hi Ada,\n\nPitch.\n\n" + URL, "Ejentic AI", URL)
       .endswith(URL + "\n\nBest,\nEjentic AI"))
 
+# Greeting safety net: a leaked placeholder greeting becomes a safe "Hi there,";
+# a real first name (or an already-safe greeting) is never touched.
+check("finalize_body rewrites a leaked 'Hi Name,' greeting",
+      quality.finalize_body("Hi Name,\n\nPitch.\n\nBest,\nX", "X", None).startswith("Hi there,"))
+check("finalize_body rewrites a bracketed '[First Name]' greeting",
+      quality.finalize_body("Hi [First Name],\n\nPitch.\n\nBest,\nX", "X", None).startswith("Hi there,"))
+check("finalize_body leaves a real first-name greeting alone",
+      quality.finalize_body("Hi Ada,\n\nPitch.\n\nBest,\nX", "X", None).startswith("Hi Ada,"))
+check("finalize_body leaves an existing 'Hi there,' greeting alone",
+      quality.finalize_body("Hi there,\n\nPitch.\n\nBest,\nX", "X", None).startswith("Hi there,"))
+
 
 # --------------------------------------------------------------------------
 # copy_instructions — the single shared framework (drafter + reviser)
@@ -125,6 +136,7 @@ check("copy_instructions forbids inventing a link when there is none",
 check("copy_instructions has no link rule when there is no link",
       "Put this exact audit link" not in no_link)
 check("copy_instructions carries the real sign-off name", "Ejentic AI" in with_link)
+check("copy_instructions gives a safe no-name greeting rule", "Hi there," in with_link)
 check("copy_instructions enforces the 60-90 word budget", "60-90 words" in with_link)
 check("copy_instructions forbids inventing a current-state stat",
       "Never state a statistic as a fact about THEIR" in with_link)

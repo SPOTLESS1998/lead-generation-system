@@ -86,6 +86,14 @@ def test_generate_copy_grounds_in_facts():
     check("draft prompt omits the facts block when nothing is known",
           "WHAT WE ACTUALLY KNOW ABOUT THEM" not in cap3["prompt"])
 
+    # Blank first name (role mailbox) -> the prompt greets safely as 'there', never a
+    # literal placeholder the model would echo as "Hi Name,".
+    cap4 = _capture_generate_json()
+    lead4 = {"first_name": "", "company_name": "Acme"}
+    lead_agent.generate_copy(CFG, lead4, "BRIEF")
+    check("blank first name -> prompt uses a safe 'there' greeting name",
+          "Name: there" in cap4["prompt"])
+
 
 # --------------------------------------------------------------------------
 # generate_strategy — the OBSERVATION is anchored to the same facts

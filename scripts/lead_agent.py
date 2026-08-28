@@ -73,6 +73,9 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     # "[Your Name]" placeholder — fine to fix here so both the prompt and the
     # post-generation safety net below use the same real sender identity.
     sender_name = (cfg.get("from_name") or cfg.get("client_name") or "our team").strip()
+    # Blank first name (common for role mailboxes like info@) -> a safe 'there' so the
+    # greeting reads "Hi there," not a literal "Hi Name," — mirrors draft_queued.
+    greet_first = (lead.get("first_name") or "").strip() or "there"
 
     # Give the copywriter the real facts directly (not just the digested brief) so
     # sentence 1 can cite something true and specific about THIS prospect.
@@ -85,7 +88,7 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     prompt = f"""You are a world-class B2B cold-email copywriter writing ONE email for {cfg['client_name']}.
 
     PROSPECT:
-    Name: {lead.get('first_name','')} {lead.get('last_name','')}
+    Name: {greet_first} {lead.get('last_name','')}
     Company: {lead.get('company_name','')}
 
     {facts_block}
