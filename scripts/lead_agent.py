@@ -141,19 +141,42 @@ def get_demo_pitch(company_name, base_url=None):
 # Main pipeline
 # --------------------------------------------------------------------------
 
-def main():
+def main(preview=False, limit=None):
     cfg = config.load_client()
+
+    # PREVIEW: run the EXACT real pipeline (scrape → strategist → magnet → copywriter →
+    # quality gate → metrics), but against a THROWAWAY database, and replace the operator
+    # hand-off with a full print. Nothing is queued, emailed, or sent — so what you see is
+    # precisely what would ship, with no risk and no misleading shortcuts.
+    preview_db = None
+    if preview:
+        import tempfile
+        limit = int(limit or 3)
+        f = tempfile.NamedTemporaryFile(prefix="leadgen_preview_", suffix=".sqlite", delete=False)
+        f.close()
+        preview_db = f.name
+        # Don't scrape dozens of sites just to preview a few — cap the source to the sample.
+        for src in ("discovery", "yellowpages"):
+            if isinstance(cfg.get(src), dict):
+                d = dict(cfg[src])
+                d["max_leads"] = min(int(d.get("max_leads", 25) or 25), limit)
+                cfg = {**cfg, src: d}
+
     print("=========================================================")
-    print(f"🚀 {cfg['client_name']} - Lead Scout & Drafter")
+    print(f"🚀 {cfg['client_name']} - Lead Scout & Drafter" + ("   [PREVIEW]" if preview else ""))
     _cap = budget.daily_cap_usd(cfg)
     _prem = ("on" + (f" (≤${_cap:.2f}/day)" if _cap else " (uncapped)")) if budget.premium_enabled(cfg) else "off"
     _gate = "on" if ((cfg.get("copy", {}) or {}).get("quality_gate", {}) or {}).get("enabled") else "off"
     print(f"   client={cfg['client']}  send_mode={cfg['sending']['mode']}  "
           f"demo_mode={cfg['demo_mode']}  premium_copy={_prem}  quality_gate={_gate}")
+    if preview:
+        print(f"   🔎 PREVIEW — real scrape+facts+agents+metrics on a THROWAWAY db; "
+              f"nothing queued/emailed/sent (sample: {limit}).")
     print("=========================================================")
 
-    conn = state.connect(cfg["paths"]["db"])
+    conn = state.connect(preview_db or cfg["paths"]["db"])
     run_id = obs.new_run_id()   # groups every event this run emits in the ledger
+    max_drafts = limit if preview else MAX_PER_RUN
 
     # Lead source is config-selectable: a curated CSV, or live auto-discovery
     # (Google Maps or Yellow Pages → Firecrawl → AI extraction). All return
@@ -191,8 +214,9 @@ def main():
 
     drafted = 0
     for lead in all_leads:
-        if drafted >= MAX_PER_RUN:
-            print_step(f"⏹️  Reached MAX_PER_RUN ({MAX_PER_RUN}); stopping this run.")
+        if drafted >= max_drafts:
+            label = "sample limit" if preview else "MAX_PER_RUN"
+            print_step(f"⏹️  Reached {label} ({max_drafts}); stopping this run.")
             break
 
         skip, reason = suppression.should_skip(conn, cfg["client"], lead["email"])
@@ -256,6 +280,18 @@ def main():
         print(f"Subject: {subject}   (drafted by: {provider})")
         print("------------------------")
 
+        if preview:
+            # Real draft, real embedded magnet — just shown to you instead of queued.
+            print("\n📧 --- FULL EMAIL (exactly what would go for your approval) ---")
+            print(f"To: {lead['first_name']} {lead['last_name']} <{lead['email']}>  |  {lead['company_name']}")
+            print(f"Subject: {subject}")
+            print("-" * 60)
+            print(body)
+            print("-" * 60)
+            print(f"🎁 Embedded lead magnet (personalized audit page): {magnet_url or '(none built)'}")
+            drafted += 1
+            continue
+
         entry = {
             "kind": "cold",
             "client": cfg["client"],
@@ -286,6 +322,22 @@ def main():
         except Exception as e:
             print(f"⚠️  couldn't print run metrics ({e}); the ledger still has the raw events.")
 
+    if preview and preview_db:
+        conn.close()
+        try:
+            os.unlink(preview_db)
+        except OSError:
+            pass
+        print("\n✅ PREVIEW complete — throwaway db removed. Nothing was queued, emailed, or sent.")
+
 
 if __name__ == "__main__":
-    main()
+    _args = sys.argv[1:]
+    _preview = any(a in ("--preview", "--dry-run") for a in _args)
+    _limit = None
+    for _a in _args:
+        if _a.startswith("--limit="):
+            _limit = int(_a.split("=", 1)[1])
+        elif _a.isdigit():
+            _limit = int(_a)
+    main(preview=_preview, limit=_limit)
