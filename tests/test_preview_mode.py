@@ -52,9 +52,14 @@ _FAKE_BODY = "Hi Ada,\n\nBODY-MARKER pitch.\n\nhttp://localhost:5002/magnet/ejen
 def test_preview_runs_real_path_but_persists_nothing():
     print("\n[main(preview=True): real path, throwaway db, nothing queued/sent]")
     calls = {"save_pending": 0, "notify_operator": 0}
+    captured = {}
 
     # Patch every seam that would hit the network or persist beyond the throwaway db.
-    discovery.load_leads = lambda cfg, conn=None: ([dict(_FAKE_LEAD)], 0)
+    def _fake_load(cfg, conn=None):
+        captured["cfg"] = cfg
+        return ([dict(_FAKE_LEAD)], 0)
+
+    discovery.load_leads = _fake_load
     lead_agent.generate_strategy = lambda cfg, lead: ("OUTCOME: standard", "fake")
     lead_agent.budget.copy_cfg = lambda conn, cfg: cfg
     lead_agent.magnet.build_content = lambda cfg, lead, brief: {"headline": "h", "steps": []}
@@ -83,6 +88,15 @@ def test_preview_runs_real_path_but_persists_nothing():
     check("preview shows the embedded magnet link", "magnet/ejentic/tok123" in out)
     check("preview still prints the live run metrics", "RUN METRICS" in out)
     check("preview announces it sent nothing", "PREVIEW complete" in out and "Nothing was queued" in out)
+
+    # The preview must be NARROW: one segment, one query, a small scrape — not a
+    # full 12-search fan-out just to draft a couple of leads.
+    dsc = captured["cfg"]["discovery"]
+    check("preview narrows discovery to one segment", len(dsc.get("segments", [])) <= 1)
+    check("preview narrows to a single query per segment",
+          all(len(s.get("queries", [])) <= 1 for s in dsc.get("segments", [])))
+    check("preview caps max_leads to the sample size", dsc["max_leads"] == 1)
+    check("preview keeps max_results small", dsc["max_results"] <= 3)
 
 
 def main():

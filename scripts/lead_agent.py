@@ -155,11 +155,21 @@ def main(preview=False, limit=None):
         f = tempfile.NamedTemporaryFile(prefix="leadgen_preview_", suffix=".sqlite", delete=False)
         f.close()
         preview_db = f.name
-        # Don't scrape dozens of sites just to preview a few — cap the source to the sample.
+        # A preview shouldn't fan out across every segment/query just to show a few
+        # drafts — narrow the source to ONE segment + ONE query and a handful of sites,
+        # so it's fast and cheap (no firing a dozen Maps searches to draft two leads).
         for src in ("discovery", "yellowpages"):
             if isinstance(cfg.get(src), dict):
                 d = dict(cfg[src])
-                d["max_leads"] = min(int(d.get("max_leads", 25) or 25), limit)
+                d["max_leads"] = limit
+                d["max_results"] = max(limit + 2, 3)   # a few spares in case some fail to enrich
+                segs = d.get("segments") or []
+                if segs:
+                    seg = dict(segs[0])
+                    seg["queries"] = (seg.get("queries") or [])[:1]
+                    d["segments"] = [seg]
+                if d.get("queries"):
+                    d["queries"] = d["queries"][:1]
                 cfg = {**cfg, src: d}
 
     print("=========================================================")
