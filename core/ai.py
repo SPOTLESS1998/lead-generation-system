@@ -190,9 +190,14 @@ def _nvidia_chat(cfg, prompt, temperature=0.4, max_tokens=2000):  # 400 truncate
 
 _ANTHROPIC_ATTEMPTS = 2          # total tries against a possibly-throttling endpoint
 _ANTHROPIC_RETRY_BACKOFF = 0.6   # seconds between tries, grows per attempt (0 in tests)
+_ANTHROPIC_READ_TIMEOUT = 120    # seconds. Opus-4-8 via AgentRouter FORCES extended thinking
+                                 # (~15s of silent thinking first), so one real draft call runs
+                                 # ~25-30s and can spike higher under load. The old 60s read
+                                 # timeout killed those calls mid-flight -> reset -> retry ->
+                                 # circuit breaker -> failover. 120s fits a slow-but-good call.
 
 
-def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=2000):  # room for a full email-in-JSON
+def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=4000):  # headroom for forced thinking + the email
     """Call the Anthropic Messages API — real Claude, METERED (spends credits/quota).
 
     Works against the official API OR any Anthropic-compatible proxy/gateway
@@ -218,6 +223,14 @@ def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=2000):  # room for 
         base = base[:-len("/v1")].rstrip("/")
     model = cfg.get("anthropic_model") \
         or (cfg.get("copy", {}) or {}).get("anthropic_model") or "claude-opus-4-8"
+    # Opus-4-8 via AgentRouter/Bedrock FORCES extended thinking on (the API's `thinking`
+    # param is silently ignored on this proxy — verified), and thinking burns ~1200-1900
+    # output tokens BEFORE the email. If max_tokens is too small the whole budget goes to
+    # thinking and the text block comes back EMPTY or truncated (stop_reason 'max_tokens')
+    # — which used to read as "throttling" and fail us over to the free chain. Generous
+    # headroom fixes it, and the model still stops on its own (~1800 tokens), so a bigger
+    # ceiling costs no extra latency. Tunable per client via cfg['anthropic_max_tokens'].
+    max_tokens = int(cfg.get("anthropic_max_tokens") or max_tokens)
     # Proxies (e.g. AgentRouter) reject a generic 'python-requests' User-Agent with
     # 401 "unauthorized client detected"; identify as the Claude CLI (this IS Claude
     # tooling). Harmless against the official API, which does not gate on User-Agent.
@@ -246,7 +259,8 @@ def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=2000):  # room for 
     attempts = max(1, int(cfg.get("anthropic_attempts") or _ANTHROPIC_ATTEMPTS))
     last_err = None
     for i in range(attempts):
-        resp = requests.post(f"{base}/v1/messages", headers=headers, json=body, timeout=(_CONNECT_TIMEOUT, 60))
+        resp = requests.post(f"{base}/v1/messages", headers=headers, json=body,
+                             timeout=(_CONNECT_TIMEOUT, _ANTHROPIC_READ_TIMEOUT))
         if resp.status_code == 200:
             data = resp.json()
             parts = [b.get("text", "") for b in (data.get("content") or []) if b.get("type") == "text"]
@@ -255,8 +269,11 @@ def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=2000):  # room for 
                 u = data.get("usage") or {}
                 it, ot = int(u.get("input_tokens") or 0), int(u.get("output_tokens") or 0)
                 return text, {"prompt_tokens": it, "completion_tokens": ot, "total_tokens": it + ot}
-            # 200 but no text = a proxy throttling tell. Retry, then fail over.
-            last_err = RuntimeError("Anthropic returned empty content")
+            # 200 but no text. Two causes: a proxy throttling tell, OR forced thinking ate
+            # the whole max_tokens budget (stop_reason 'max_tokens', a thinking block but no
+            # text) — the headroom above is what prevents the latter. Retry, then fail over.
+            stop = data.get("stop_reason")
+            last_err = RuntimeError(f"Anthropic returned empty content (stop_reason={stop})")
         else:
             last_err = RuntimeError(f"Anthropic API {resp.status_code}: {resp.text[:200]}")
             # Terminal auth failure on the official API — no point retrying.
