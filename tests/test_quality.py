@@ -146,6 +146,10 @@ check("copy_instructions forbids opening on a negative/operational detail",
       "NEVER open by highlighting a negative or operational detail" in with_link)
 check("copy_instructions ties sentence 3 to the brief's exact figure (no inflation)",
       "never inflate it or swap in a bigger number" in with_link)
+check("copy_instructions locks the pitch to the brief's one service",
+      "Pitch ONLY the single service named in the strategy brief" in with_link)
+check("RUBRIC punishes pitching a service outside the brief",
+      "a different service than the strategy brief" in quality.RUBRIC)
 
 
 # --------------------------------------------------------------------------

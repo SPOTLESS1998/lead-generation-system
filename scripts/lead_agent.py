@@ -25,6 +25,39 @@ def print_step(step):
 # reply agent). These two functions just build the prompts.
 # --------------------------------------------------------------------------
 
+# The four house offerings, used only as a fallback for a client that runs on a
+# curated CSV with no segments/outcomes configured. Real clients derive their menu
+# from config (below), so this list never has to be edited per client.
+_DEFAULT_OFFERINGS = [
+    "Localized Multilingual Support Agents",
+    "AI Lead Generation System",
+    "Air-Gapped Internal Knowledge Base (RAG)",
+    "Enterprise Workflow Automation",
+]
+
+
+def _client_offerings(cfg):
+    """The CLOSED menu of what this client actually sells — the only services the
+    strategist may pitch. Derived from the client's OWN config (the services its
+    discovery/yellowpages segments target, plus any with a house-standard outcome),
+    so it stays correct per client without hardcoding. Falls back to the four house
+    offerings only when a client configures none (e.g. a plain CSV client)."""
+    seen, out = set(), []
+
+    def _add(s):
+        s = (s or "").strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+
+    for src in ("discovery", "yellowpages"):
+        for seg in ((cfg.get(src) or {}).get("segments") or []):
+            _add(seg.get("service"))
+    for svc in (cfg.get("service_outcomes") or {}):
+        _add(svc)
+    return out or list(_DEFAULT_OFFERINGS)
+
+
 def generate_strategy(cfg, lead):
     print_step(f"🧠 [Strategist] Analyzing {lead['company_name']}...")
 
@@ -33,7 +66,7 @@ def generate_strategy(cfg, lead):
     # service so the bottleneck + Free Gift pitch the exact thing they need.
     service = (lead.get("ejentic_service") or "").strip()
     service_line = (
-        f"\n    This prospect was matched to Ejentic's \"{service}\" offering — anchor the "
+        f"\n    This prospect was matched to your \"{service}\" offering — anchor the "
         f"bottleneck and the Free Gift around that specific service.\n"
         if service else ""
     )
@@ -54,9 +87,26 @@ def generate_strategy(cfg, lead):
         "one believable result of that service, with a plausible number or timeframe — no hype."
     )
 
-    prompt = f"""You are the lead strategist for {cfg['client_name']}, an AI automation agency
-    whose offerings include Localized Multilingual Support Agents, AI Lead Generation Systems,
-    Air-Gapped Internal Knowledge Bases (RAG), and Enterprise Workflow Automation.{service_line}
+    # The CLOSED menu of what this client actually sells. The strategist may pitch ONLY
+    # these — never a service we don't provide (this is what stops a marketing-agency
+    # prospect getting an off-catalog "ad-spend optimization" pitch). When discovery has
+    # already matched this prospect to one offering, that match is LOCKED, not a default.
+    offerings = _client_offerings(cfg)
+    offerings_list = "; ".join(offerings)
+    if service:
+        service_rule = (
+            f'SERVICE: MUST be exactly "{service}" — this prospect was pre-matched to that '
+            f"offering; do NOT substitute or invent a different one, even if their own industry "
+            f"suggests it (never pitch ad-spend, SEO, web design, or branding — we don't sell those)."
+        )
+    else:
+        service_rule = (
+            "SERVICE: MUST be exactly ONE of our offerings above, copied verbatim — never invent "
+            "a service we don't provide (no ad-spend, SEO, web design, or branding)."
+        )
+
+    prompt = f"""You are the lead strategist for {cfg['client_name']}, an AI automation agency.
+    Our ONLY offerings — the complete menu you may pitch — are: {offerings_list}.{service_line}
     Prospect:
     - Name: {lead.get('first_name','')} {lead.get('last_name','')}
     - Title: {lead.get('title','')}
@@ -67,9 +117,9 @@ def generate_strategy(cfg, lead):
     turn into a cold email. Fill in each line with something specific to THIS prospect:
 
     OBSERVATION: one specific, verifiable, FLATTERING thing about this business — quote a concrete detail from what we know that makes them look good (a strength, specialty, market, or achievement). NEVER open on a negative or operational detail (a complaints line, a support number, a disclaimer, a problem).
-    PAIN: the single most costly operational bottleneck that detail implies.
-    SERVICE: the one {cfg['client_name']} offering that best relieves it{f" (default to '{service}')" if service else ''}.
-    OUTCOME: {outcome_line}
+    PAIN: the single most costly operational bottleneck that detail implies — one the SERVICE below actually relieves.
+    {service_rule}
+    OUTCOME: the direct result of that exact SERVICE — {outcome_line}
     AUDIT: what the free personalized audit page for them should focus on.
 
     Output ONLY those five labeled lines, nothing else.

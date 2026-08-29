@@ -157,6 +157,65 @@ def test_generate_strategy_standardizes_outcome():
 
 
 # --------------------------------------------------------------------------
+# generate_strategy — the SERVICE is LOCKED to a real offering, never off-catalog.
+# This is the fix for a marketing-agency prospect getting pitched "ad-spend
+# optimization" (a service the agency doesn't sell) instead of its matched offering.
+# --------------------------------------------------------------------------
+def test_generate_strategy_locks_to_real_offerings():
+    print("\n[generate_strategy: SERVICE hard-locked to a real offering]")
+
+    # The menu is derived from the CLIENT'S OWN config (segment services + the keys of
+    # service_outcomes), so it's correct per client — not a hardcoded list.
+    cfg = {**CFG,
+           "discovery": {"segments": [
+               {"service": "Localized Multilingual Support Agents"},
+               {"service": "AI Lead Generation System"}]},
+           "service_outcomes": {"Enterprise Workflow Automation": "reclaim 10-15 hours/week"}}
+    offerings = lead_agent._client_offerings(cfg)
+    check("offerings are derived from the config segments",
+          "Localized Multilingual Support Agents" in offerings and "AI Lead Generation System" in offerings)
+    check("offerings also include a service that only has a standard outcome",
+          "Enterprise Workflow Automation" in offerings)
+    check("no segments/outcomes -> falls back to the house offerings",
+          "Enterprise Workflow Automation" in lead_agent._client_offerings({"client_name": "X"}))
+
+    cap = {}
+
+    def fake_generate(cfg, prompt):
+        cap["prompt"] = prompt
+        return "SERVICE: ...", "fake"
+
+    lead_agent.generate = fake_generate
+
+    # A MATCHED lead -> SERVICE is hard-locked to that exact tag (not "default to").
+    lead = {"first_name": "", "company_name": "Socialander",
+            "ejentic_service": "AI Lead Generation System",
+            "company_facts": "Digital marketing agency operating across 6 countries."}
+    lead_agent.generate_strategy(cfg, lead)
+    check("matched lead: SERVICE is hard-locked to the exact offering",
+          'MUST be exactly "AI Lead Generation System"' in cap["prompt"])
+    check("matched lead: strategist is forbidden to substitute a different service",
+          "do NOT substitute or invent a different one" in cap["prompt"])
+    check("prompt presents a CLOSED offerings menu, not an open 'includes' list",
+          "the complete menu you may pitch" in cap["prompt"])
+    check("prompt explicitly bars off-catalog services (ad-spend/SEO)",
+          "ad-spend" in cap["prompt"].lower())
+
+    # An UNMATCHED lead -> SERVICE must still be exactly one of the real offerings.
+    cap2 = {}
+
+    def fake_generate2(cfg, prompt):
+        cap2["prompt"] = prompt
+        return "SERVICE: ...", "fake"
+
+    lead_agent.generate = fake_generate2
+    lead2 = {"first_name": "", "company_name": "NoTag Ltd", "company_facts": "x"}
+    lead_agent.generate_strategy(cfg, lead2)
+    check("unmatched lead: SERVICE must be one of our real offerings, verbatim",
+          "MUST be exactly ONE of our offerings above" in cap2["prompt"])
+
+
+# --------------------------------------------------------------------------
 # draft_queued._draft_lead_view — reads persisted facts, degrades gracefully
 # --------------------------------------------------------------------------
 def _row(**kw):
@@ -200,6 +259,7 @@ def main():
     test_generate_copy_grounds_in_facts()
     test_generate_strategy_grounds_in_facts()
     test_generate_strategy_standardizes_outcome()
+    test_generate_strategy_locks_to_real_offerings()
     test_draft_lead_view_reads_facts()
     test_config_gate_default()
     print(f"\n{'='*50}\nRESULT: {PASS} passed, {FAIL} failed\n{'='*50}")
