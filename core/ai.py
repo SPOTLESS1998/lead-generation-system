@@ -21,6 +21,13 @@ import threading
 import requests
 
 
+# Fail fast on a host that won't even accept a TCP connection promptly, while
+# still giving a healthy-but-slow provider time to answer. requests accepts a
+# (connect, read) timeout tuple: a dead/refused host trips the short connect
+# timeout instead of burning the full read timeout on every call.
+_CONNECT_TIMEOUT = 5   # seconds allowed to establish the TCP connection
+
+
 # --- per-thread token accounting -------------------------------------------
 # observability.track() resets this when a pipeline step begins and collects it
 # when the step ends, so the tokens attributed to a step are exactly those spent
@@ -119,7 +126,7 @@ def _freellmapi_chat(cfg, prompt, temperature=0.4, max_tokens=800):
                 f"{base}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json=body,
-                timeout=60,   # the gateway may try several upstreams before one answers
+                timeout=(_CONNECT_TIMEOUT, 60),   # (connect, read): the gateway may try several upstreams before one answers
             )
             if resp.status_code != 200:
                 raise RuntimeError(f"FreeLLMAPI {resp.status_code}: {resp.text[:200]}")
@@ -168,7 +175,7 @@ def _nvidia_chat(cfg, prompt, temperature=0.4, max_tokens=400):
             "temperature": temperature,
             "max_tokens": max_tokens,
         },
-        timeout=30,
+        timeout=(_CONNECT_TIMEOUT, 30),   # (connect, read)
     )
     if resp.status_code != 200:
         raise RuntimeError(f"NVIDIA API {resp.status_code}: {resp.text[:200]}")
@@ -234,7 +241,7 @@ def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=1024):
     attempts = max(1, int(cfg.get("anthropic_attempts") or _ANTHROPIC_ATTEMPTS))
     last_err = None
     for i in range(attempts):
-        resp = requests.post(f"{base}/v1/messages", headers=headers, json=body, timeout=60)
+        resp = requests.post(f"{base}/v1/messages", headers=headers, json=body, timeout=(_CONNECT_TIMEOUT, 60))
         if resp.status_code == 200:
             data = resp.json()
             parts = [b.get("text", "") for b in (data.get("content") or []) if b.get("type") == "text"]
@@ -283,21 +290,108 @@ def _provider_order(cfg):
     return order or DEFAULT_PROVIDERS
 
 
+# --- circuit breaker --------------------------------------------------------
+# A failover chain is cheap only when ONE provider is down: you still pay that
+# dead provider's full timeout/retry cost on EVERY call before moving on. Under a
+# sustained outage (a saturated proxy, a refused gateway, a hung host) that tax
+# repeats for every single lead. A circuit breaker stops the bleeding: after a
+# provider fails N times in a row it "trips", and we skip it instantly for a
+# cooldown window instead of re-paying its timeout. Three states:
+#   CLOSED     normal — the provider is called.
+#   OPEN       tripped — skip it immediately until the cooldown elapses.
+#   HALF-OPEN  cooldown elapsed — let ONE trial call through; success closes the
+#              breaker, another failure re-opens it for a fresh cooldown.
+# State is per-provider and process-global (shared across every client and Flask
+# worker thread), so once the server learns "nvidia is down" every request skips
+# it. A lock guards the dict because the approval server is multi-threaded.
+_BREAKER_THRESHOLD = 3       # consecutive failures before a provider trips
+_BREAKER_COOLDOWN = 60.0     # seconds to skip a tripped provider before a retrial
+_breaker_lock = threading.Lock()
+_breakers = {}               # provider -> {"fails": int, "open_until": monotonic secs}
+
+
+def reset_breakers():
+    """Clear all circuit-breaker state (used at process start and by tests)."""
+    with _breaker_lock:
+        _breakers.clear()
+
+
+def _breaker_params(cfg):
+    """(enabled, threshold, cooldown) from cfg['circuit_breaker'], with defaults."""
+    b = (cfg.get("circuit_breaker") or {}) if isinstance(cfg, dict) else {}
+    enabled = b.get("enabled", True)
+    threshold = max(1, int(b.get("threshold", _BREAKER_THRESHOLD) or _BREAKER_THRESHOLD))
+    cooldown = float(b.get("cooldown_secs", _BREAKER_COOLDOWN) or _BREAKER_COOLDOWN)
+    return enabled, threshold, cooldown
+
+
+def _breaker_is_open(provider):
+    """True if this provider is tripped and still cooling down (skip it now).
+
+    Once the cooldown has elapsed this returns False — the HALF-OPEN state — so the
+    next call is allowed through as a single trial to see if the provider recovered.
+    """
+    with _breaker_lock:
+        st = _breakers.get(provider)
+        if not st or not st["open_until"]:
+            return False
+        return time.monotonic() < st["open_until"]
+
+
+def _breaker_record(provider, ok, threshold, cooldown):
+    """Fold one call's outcome into a provider's breaker.
+
+    Returns 'opened' or 'closed' when the state visibly flips (for a one-line log),
+    else None — so a long run doesn't spam a line for every routine call.
+    """
+    with _breaker_lock:
+        st = _breakers.setdefault(provider, {"fails": 0, "open_until": 0.0})
+        was_open = bool(st["open_until"])
+        if ok:
+            st["fails"] = 0
+            st["open_until"] = 0.0
+            return "closed" if was_open else None
+        st["fails"] += 1
+        if st["fails"] >= threshold:
+            st["open_until"] = time.monotonic() + cooldown
+            return None if was_open else "opened"   # re-open quietly; the first trip is logged
+        return None
+
+
 def generate(cfg, prompt):
     """Generate text, trying each configured provider in order until one succeeds.
 
     Returns (text, provider_used). Providers whose credentials are unset raise and
-    are skipped, so the chain degrades gracefully instead of crashing.
+    are skipped. A per-provider circuit breaker (above) skips a provider that has
+    been failing repeatedly, so a sustained outage costs one instant skip per call
+    instead of that provider's full timeout — and the chain still self-heals once
+    the provider recovers.
     """
+    enabled, threshold, cooldown = _breaker_params(cfg)
     last_err = None
+    skipped_open = []
     for provider in _provider_order(cfg):
+        if enabled and _breaker_is_open(provider):
+            skipped_open.append(provider)
+            continue
         try:
             text, usage = _PROVIDER_FUNCS[provider](cfg, prompt)
             _accumulate(provider, usage)
+            if enabled and _breaker_record(provider, True, threshold, cooldown) == "closed":
+                print(f"🔌 circuit breaker CLOSED for {provider} (recovered).")
             return text, provider
         except Exception as e:
             last_err = e
             print(f"⚠️  {provider} generation failed ({e}); trying next provider...")
+            if enabled and _breaker_record(provider, False, threshold, cooldown) == "opened":
+                print(f"🔌 circuit breaker OPEN for {provider} "
+                      f"({threshold} consecutive fails) — skipping it for {cooldown:.0f}s.")
+    if skipped_open and last_err is None:
+        # Every eligible provider was tripped and skipped — fail fast (the whole point)
+        # rather than force-calling known-dead providers; the next call half-opens them.
+        raise RuntimeError(
+            "All providers are in circuit-breaker cooldown "
+            f"({', '.join(skipped_open)}); failing fast — retry after cooldown.")
     raise RuntimeError(f"All providers failed. Last error: {last_err}")
 
 

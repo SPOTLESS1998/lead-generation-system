@@ -116,6 +116,11 @@ DEFAULTS = {
         "throttle_seconds": {"min": 20, "max": 60},
         "mailboxes": [],                     # see _resolve_mailbox for the shape
     },
+    "circuit_breaker": {                      # skip a provider that keeps failing instead of
+        "enabled": True,                      # re-paying its timeout/retries on every call (core/ai.py)
+        "threshold": 3,                       # consecutive failures before the provider "trips"
+        "cooldown_secs": 60,                  # seconds to skip a tripped provider before one retrial
+    },
     "service_outcomes": {},                   # per-service STANDARD outcome promise, keyed by the
                                               # lead's matched service. Pins the pitch's headline
                                               # number so it's identical across every email for a
