@@ -268,6 +268,16 @@ u = ai.collect_usage()
 check("degrade: usage attributed to the answering provider", u["provider"] == "freellmapi" and u["total_tokens"] == 3)
 
 
+# --------------------------------------------------------------------------
+# Copy-path output caps must fit a full email-in-JSON. 800/400 truncated a
+# reasoning model's JSON mid-string -> invalid JSON -> failed drafts; guard the fix.
+# --------------------------------------------------------------------------
+import inspect  # noqa: E402
+for _fn in ("_freellmapi_chat", "_nvidia_chat", "_anthropic_chat"):
+    _cap = inspect.signature(getattr(ai, _fn)).parameters["max_tokens"].default
+    check(f"{_fn} caps output >=2000 (a full email-in-JSON won't truncate)", _cap >= 2000)
+
+
 # ---- restore everything we touched ----
 ai.requests.post = _REAL_POST
 ai._PROVIDER_FUNCS["freellmapi"] = _REAL_FREE

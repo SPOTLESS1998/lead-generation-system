@@ -83,7 +83,12 @@ def _norm_usage(u):
     }
 
 
-def _freellmapi_chat(cfg, prompt, temperature=0.4, max_tokens=800):
+def _freellmapi_chat(cfg, prompt, temperature=0.4, max_tokens=2000):
+    # 2000 (not 800): reasoning models served via the gateway (gpt-oss-120b,
+    # gemini-3.1-pro) spend output budget "thinking" BEFORE emitting the JSON, so a
+    # full email-in-JSON overran 800 and truncated mid-string -> invalid JSON ->
+    # failed drafts. A cap is a ceiling not a target, so short calls (strategist,
+    # extractor) still use only what they need; this just stops long copy truncating.
     """Call the local FreeLLMAPI gateway (OpenAI-compatible /v1/chat/completions).
 
     FreeLLMAPI aggregates many free provider tiers behind one endpoint and does its
@@ -162,7 +167,7 @@ def _gemini_chat(cfg, prompt):
     return text, usage
 
 
-def _nvidia_chat(cfg, prompt, temperature=0.4, max_tokens=400):
+def _nvidia_chat(cfg, prompt, temperature=0.4, max_tokens=2000):  # 400 truncated full-email JSON
     api_key = os.environ.get("NVIDIA_API_KEY")
     if not api_key:
         raise RuntimeError("NVIDIA_API_KEY not set")
@@ -187,7 +192,7 @@ _ANTHROPIC_ATTEMPTS = 2          # total tries against a possibly-throttling end
 _ANTHROPIC_RETRY_BACKOFF = 0.6   # seconds between tries, grows per attempt (0 in tests)
 
 
-def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=1024):
+def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=2000):  # room for a full email-in-JSON
     """Call the Anthropic Messages API — real Claude, METERED (spends credits/quota).
 
     Works against the official API OR any Anthropic-compatible proxy/gateway
