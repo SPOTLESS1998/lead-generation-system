@@ -440,13 +440,17 @@ def record_event(conn, client, step, status, subject=None, run_id=None, attempt=
     conn.commit()
 
 
-def list_events(conn, client, since=None, step=None, status=None, limit=None):
-    """Ledger rows for a client, newest first. `since` is an ISO-timestamp lower bound."""
+def list_events(conn, client, since=None, step=None, status=None, limit=None, run_id=None):
+    """Ledger rows for a client, newest first. `since` is an ISO-timestamp lower bound.
+    Pass `run_id` to scope to a single agent pass (for a per-run metrics summary)."""
     sql = "SELECT * FROM pipeline_events WHERE client=?"
     params = [client]
     if since:
         sql += " AND created_at >= ?"
         params.append(since)
+    if run_id:
+        sql += " AND run_id=?"
+        params.append(run_id)
     if step:
         sql += " AND step=?"
         params.append(step)

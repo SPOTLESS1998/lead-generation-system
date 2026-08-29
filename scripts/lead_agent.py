@@ -276,6 +276,16 @@ def main():
     print(f"\n🎉 Done. Drafted {drafted} pitch(es) awaiting your web approval "
           f"at {cfg.get('unsubscribe_base_url')}.")
 
+    # Always-live performance readout: what THIS run actually spent (tokens/cost/time),
+    # straight from the ledger. Wrapped so a metrics hiccup can never fail the run.
+    if (cfg.get("observability", {}) or {}).get("enabled", True):
+        try:
+            summary = obs.run_metrics(conn, cfg, run_id)
+            if summary["totals"]["events"]:
+                print("\n" + obs.format_run_summary(summary))
+        except Exception as e:
+            print(f"⚠️  couldn't print run metrics ({e}); the ledger still has the raw events.")
+
 
 if __name__ == "__main__":
     main()

@@ -141,14 +141,12 @@ class track:
 
 # --- metrics rollup ---------------------------------------------------------
 
-def metrics(conn, cfg, since=None):
-    """Aggregate the ledger into the numbers a dashboard / client report wants.
+def _rollup(rows):
+    """Totals + per-step breakdown over a list of ledger rows.
 
-    Returns a dict with totals, a per-step breakdown, health (error rate), and
-    unit economics (cost per lead / per booked meeting). Pure reads; no mutation.
+    Shared by metrics() (client-wide / since-window) and run_metrics() (one pass),
+    so both roll up spend identically and only differ in which rows they select.
     """
-    client = cfg["client"]
-    rows = state.list_events(conn, client, since=since)
     total = len(rows)
     errors = sum(1 for r in rows if r["status"] == "error")
     ok = sum(1 for r in rows if r["status"] == "ok")
@@ -156,6 +154,7 @@ def metrics(conn, cfg, since=None):
     prompt_tokens = sum(r["prompt_tokens"] or 0 for r in rows)
     completion_tokens = sum(r["completion_tokens"] or 0 for r in rows)
     cost = round(sum(r["cost_usd"] or 0.0 for r in rows), 6)
+    duration_ms = sum(r["duration_ms"] or 0 for r in rows)
 
     by_step = {}
     for r in rows:
@@ -171,11 +170,7 @@ def metrics(conn, cfg, since=None):
         s["cost_usd"] = round(s["cost_usd"] + (r["cost_usd"] or 0.0), 6)
         s["duration_ms"] += r["duration_ms"] or 0
 
-    leads = state.count_leads(conn, client)
-    bookings = state.count_bookings(conn, client)
     return {
-        "client": client,
-        "since": since,
         "totals": {
             "events": total, "ok": ok, "error": errors, "skipped": skipped,
             "error_rate": round(errors / total, 4) if total else 0.0,
@@ -183,8 +178,28 @@ def metrics(conn, cfg, since=None):
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
             "cost_usd": cost,
+            "duration_ms": duration_ms,
         },
         "by_step": by_step,
+    }
+
+
+def metrics(conn, cfg, since=None):
+    """Aggregate the ledger into the numbers a dashboard / client report wants.
+
+    Returns a dict with totals, a per-step breakdown, health (error rate), and
+    unit economics (cost per lead / per booked meeting). Pure reads; no mutation.
+    """
+    client = cfg["client"]
+    roll = _rollup(state.list_events(conn, client, since=since))
+    cost = roll["totals"]["cost_usd"]
+    leads = state.count_leads(conn, client)
+    bookings = state.count_bookings(conn, client)
+    return {
+        "client": client,
+        "since": since,
+        "totals": roll["totals"],
+        "by_step": roll["by_step"],
         "unit_economics": {
             "leads": leads,
             "bookings": bookings,
@@ -192,3 +207,55 @@ def metrics(conn, cfg, since=None):
             "cost_per_booking": round(cost / bookings, 6) if bookings else 0.0,
         },
     }
+
+
+def run_metrics(conn, cfg, run_id):
+    """The same rollup, scoped to ONE agent pass (by run_id).
+
+    This is what makes measurement 'always live': every run can print exactly what
+    it spent, instead of the numbers only living in the ledger. Cost-per-draft uses
+    the number of successful 'draft' steps this run as the denominator.
+    """
+    client = cfg["client"]
+    roll = _rollup(state.list_events(conn, client, run_id=run_id))
+    drafts_ok = roll["by_step"].get("draft", {}).get("ok", 0)
+    cost = roll["totals"]["cost_usd"]
+    return {
+        "client": client,
+        "run_id": run_id,
+        "totals": roll["totals"],
+        "by_step": roll["by_step"],
+        "unit_economics": {
+            "drafts": drafts_ok,
+            "cost_per_draft": round(cost / drafts_ok, 6) if drafts_ok else 0.0,
+        },
+    }
+
+
+def format_run_summary(m):
+    """Render run_metrics(...) as a compact console block for the end of a run."""
+    t = m["totals"]
+    secs = (t.get("duration_ms") or 0) / 1000.0
+    tok_in = t["prompt_tokens"]
+    tok_out = t["completion_tokens"]
+    cost = t["cost_usd"]
+    cost_line = (f"${cost:,.4f}" if cost else
+                 "$0.0000  (reference rate is 0 — tokens are the real number to watch)")
+    lines = [
+        "─" * 60,
+        f"📊 RUN METRICS — run {m['run_id']} (this pass only)",
+        f"   drafts ok: {m['by_step'].get('draft', {}).get('ok', 0)}   "
+        f"errors: {t['error']}   skipped: {t['skipped']}   events: {t['events']}",
+        f"   tokens:  {tok_in:,} in + {tok_out:,} out = {t['total_tokens']:,} total",
+        f"   cost:    {cost_line}",
+        f"   time:    {secs:,.1f}s of tracked LLM work",
+    ]
+    if m["by_step"]:
+        lines.append("   by step:")
+        for step, s in m["by_step"].items():
+            st = (s.get("duration_ms") or 0) / 1000.0
+            tok = (s["prompt_tokens"] or 0) + (s["completion_tokens"] or 0)
+            lines.append(f"     {step:<8} {s['events']} ev  "
+                         f"{s['ok']} ok / {s['error']} err   {tok:,} tok   {st:,.1f}s")
+    lines.append("─" * 60)
+    return "\n".join(lines)

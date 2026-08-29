@@ -155,6 +155,27 @@ ok("bookings counted", ue["bookings"] == 1)
 ok("cost per lead = 0.003/2", approx(ue["cost_per_lead"], 0.0015))
 ok("cost per booking = 0.003/1", approx(ue["cost_per_booking"], 0.003))
 
+print("\n--- H. run_metrics(): scoped to ONE run + console summary ------")
+RC = "run_client"
+rcfg = dict(cfg); rcfg["client"] = RC
+state.record_event(conn, RC, "draft", "ok", prompt_tokens=100, completion_tokens=40, cost_usd=0.0, duration_ms=300, run_id="RUN_A")
+state.record_event(conn, RC, "draft", "error", error="boom", prompt_tokens=10, completion_tokens=0, cost_usd=0.0, duration_ms=20, run_id="RUN_A")
+# A DIFFERENT run's event must be excluded from RUN_A's summary.
+state.record_event(conn, RC, "draft", "ok", prompt_tokens=999, completion_tokens=999, cost_usd=0.0, duration_ms=999, run_id="RUN_B")
+
+rm = obs.run_metrics(conn, rcfg, "RUN_A")
+rt = rm["totals"]
+ok("run_metrics counts only this run's events", rt["events"] == 2)
+ok("run_metrics excludes other runs' tokens", rt["prompt_tokens"] == 110)  # 100+10, not the 999
+ok("run_metrics total tokens = 150", rt["total_tokens"] == 150)
+ok("run_metrics counts this run's ok drafts", rm["unit_economics"]["drafts"] == 1)
+ok("list_events run_id filter scopes rows", len(state.list_events(conn, RC, run_id="RUN_B")) == 1)
+
+summary = obs.format_run_summary(rm)
+ok("format_run_summary returns a string", isinstance(summary, str) and "RUN METRICS" in summary)
+ok("summary shows the run id", "RUN_A" in summary)
+ok("summary notes tokens are the real number when cost is 0", "tokens are the real number" in summary)
+
 conn.close()
 os.unlink(tmpdb)
 print(f"\n=========== {P} passed, {F} failed ===========")
