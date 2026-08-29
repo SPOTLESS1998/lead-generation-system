@@ -144,6 +144,8 @@ check("copy_instructions still allows the one projected outcome number",
       "The ONE allowed projection" in with_link)
 check("copy_instructions forbids opening on a negative/operational detail",
       "NEVER open by highlighting a negative or operational detail" in with_link)
+check("copy_instructions ties sentence 3 to the brief's exact figure (no inflation)",
+      "never inflate it or swap in a bigger number" in with_link)
 
 
 # --------------------------------------------------------------------------

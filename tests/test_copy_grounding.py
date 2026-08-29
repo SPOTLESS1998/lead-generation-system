@@ -116,6 +116,47 @@ def test_generate_strategy_grounds_in_facts():
 
 
 # --------------------------------------------------------------------------
+# generate_strategy — the promised OUTCOME is a config constant, not an LLM guess.
+# This is the fix for the "15-25 leads one run, 100 the next" inconsistency: the
+# figure now comes from service_outcomes, keyed by the lead's matched service.
+# --------------------------------------------------------------------------
+def test_generate_strategy_standardizes_outcome():
+    print("\n[generate_strategy: outcome number is a config constant, not an LLM guess]")
+    cap = {}
+
+    def fake_generate(cfg, prompt):
+        cap["prompt"] = prompt
+        return "OUTCOME: ...", "fake"
+
+    lead_agent.generate = fake_generate
+
+    # A service WITH a house-standard outcome -> the strategist is handed that exact figure.
+    cfg = {**CFG, "service_outcomes": {
+        "AI Lead Generation System": "10-20 additional qualified leads per month within the first 90 days"}}
+    lead = {"first_name": "Ada", "company_name": "Acme",
+            "ejentic_service": "AI Lead Generation System",
+            "company_facts": "Services: property sales."}
+    lead_agent.generate_strategy(cfg, lead)
+    check("strategy injects the exact standard outcome figure",
+          "10-20 additional qualified leads per month within the first 90 days" in cap["prompt"])
+    check("strategy forbids inflating the standard figure", "never inflate" in cap["prompt"].lower())
+
+    # A service with NO configured standard -> graceful fallback to the free 'plausible number'.
+    cap2 = {}
+
+    def fake_generate2(cfg, prompt):
+        cap2["prompt"] = prompt
+        return "OUTCOME: ...", "fake"
+
+    lead_agent.generate = fake_generate2
+    lead2 = {"first_name": "Ada", "company_name": "Acme",
+             "ejentic_service": "Unlisted Service", "company_facts": "x"}
+    lead_agent.generate_strategy({**CFG, "service_outcomes": {}}, lead2)
+    check("no configured standard -> falls back to a plausible number",
+          "plausible number or timeframe" in cap2["prompt"])
+
+
+# --------------------------------------------------------------------------
 # draft_queued._draft_lead_view — reads persisted facts, degrades gracefully
 # --------------------------------------------------------------------------
 def _row(**kw):
@@ -158,6 +199,7 @@ def test_config_gate_default():
 def main():
     test_generate_copy_grounds_in_facts()
     test_generate_strategy_grounds_in_facts()
+    test_generate_strategy_standardizes_outcome()
     test_draft_lead_view_reads_facts()
     test_config_gate_default()
     print(f"\n{'='*50}\nRESULT: {PASS} passed, {FAIL} failed\n{'='*50}")

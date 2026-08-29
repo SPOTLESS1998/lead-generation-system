@@ -116,6 +116,11 @@ DEFAULTS = {
         "throttle_seconds": {"min": 20, "max": 60},
         "mailboxes": [],                     # see _resolve_mailbox for the shape
     },
+    "service_outcomes": {},                   # per-service STANDARD outcome promise, keyed by the
+                                              # lead's matched service. Pins the pitch's headline
+                                              # number so it's identical across every email for a
+                                              # service (no more "15-25" one run, "100" the next).
+                                              # Empty => strategist falls back to a free "plausible number".
     "target_niches": [],
 }
 

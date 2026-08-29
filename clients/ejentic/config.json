@@ -104,6 +104,12 @@
       }
     ]
   },
+  "service_outcomes": {
+    "AI Lead Generation System": "10-20 additional qualified leads per month within the first 90 days",
+    "Localized Multilingual Support Agents": "instant 24/7 replies in your customers' languages, handling ~60% of routine inquiries within 60 days",
+    "Air-Gapped Internal Knowledge Base (RAG)": "trusted answers from your own documents in seconds, cutting lookup time ~50% within 60 days",
+    "Enterprise Workflow Automation": "reclaim 10-15 staff-hours per week within 90 days"
+  },
   "target_niches": [
     "local accounting firms lagos nigeria",
     "real estate agencies abuja",

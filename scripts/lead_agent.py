@@ -43,6 +43,17 @@ def generate_strategy(cfg, lead):
     # one-line description, then to nothing — so CSV leads and old rows still work.
     facts = (lead.get("company_facts") or lead.get("company_description") or "").strip()
 
+    # House-STANDARD outcome for this service, so every pitch promises the SAME defensible
+    # figure instead of a per-call LLM guess (one run said "15-25 leads/mo", another "100").
+    # Config-driven: clients/<c>/config.json -> service_outcomes, keyed by the matched service.
+    # No standard for this service => fall back to a free "plausible number" (graceful degrade).
+    standard_outcome = ((cfg.get("service_outcomes") or {}).get(service, "") or "").strip() if service else ""
+    outcome_line = (
+        f"state this EXACT expected result, keeping the figures exactly as written — never inflate them: {standard_outcome}"
+        if standard_outcome else
+        "one believable result of that service, with a plausible number or timeframe — no hype."
+    )
+
     prompt = f"""You are the lead strategist for {cfg['client_name']}, an AI automation agency
     whose offerings include Localized Multilingual Support Agents, AI Lead Generation Systems,
     Air-Gapped Internal Knowledge Bases (RAG), and Enterprise Workflow Automation.{service_line}
@@ -58,7 +69,7 @@ def generate_strategy(cfg, lead):
     OBSERVATION: one specific, verifiable, FLATTERING thing about this business — quote a concrete detail from what we know that makes them look good (a strength, specialty, market, or achievement). NEVER open on a negative or operational detail (a complaints line, a support number, a disclaimer, a problem).
     PAIN: the single most costly operational bottleneck that detail implies.
     SERVICE: the one {cfg['client_name']} offering that best relieves it{f" (default to '{service}')" if service else ''}.
-    OUTCOME: one believable result of that service, with a plausible number or timeframe — no hype.
+    OUTCOME: {outcome_line}
     AUDIT: what the free personalized audit page for them should focus on.
 
     Output ONLY those five labeled lines, nothing else.
