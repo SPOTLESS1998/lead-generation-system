@@ -197,7 +197,7 @@ _ANTHROPIC_READ_TIMEOUT = 120    # seconds. Opus-4-8 via AgentRouter FORCES exte
                                  # circuit breaker -> failover. 120s fits a slow-but-good call.
 
 
-def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=4000):  # headroom for forced thinking + the email
+def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=16000):  # big headroom: forced thinking + the email
     """Call the Anthropic Messages API — real Claude, METERED (spends credits/quota).
 
     Works against the official API OR any Anthropic-compatible proxy/gateway
@@ -224,12 +224,16 @@ def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=4000):  # headroom 
     model = cfg.get("anthropic_model") \
         or (cfg.get("copy", {}) or {}).get("anthropic_model") or "claude-opus-4-8"
     # Opus-4-8 via AgentRouter/Bedrock FORCES extended thinking on (the API's `thinking`
-    # param is silently ignored on this proxy — verified), and thinking burns ~1200-1900
-    # output tokens BEFORE the email. If max_tokens is too small the whole budget goes to
-    # thinking and the text block comes back EMPTY or truncated (stop_reason 'max_tokens')
-    # — which used to read as "throttling" and fail us over to the free chain. Generous
-    # headroom fixes it, and the model still stops on its own (~1800 tokens), so a bigger
-    # ceiling costs no extra latency. Tunable per client via cfg['anthropic_max_tokens'].
+    # param is silently ignored on this proxy — verified). max_tokens is ONE budget that the
+    # thinking AND the email both spend from, and the thinking is STOCHASTIC: on the same
+    # real copy prompt it burned 2356 output tokens one run and blew past 4000 the next
+    # (measured). When it overruns the ceiling the email gets ZERO tokens left ->
+    # stop_reason 'max_tokens', empty/truncated text -> core/ai misreads it as throttling ->
+    # fails over to the free chain (this was the real reason premium copy never used Opus:
+    # a 4000 ceiling sat right at the cliff edge). 16000 clears the worst thinking run with
+    # room to spare, and Opus still self-stops ~2400 tokens in the SAME ~35s, so a bigger
+    # ceiling costs no extra latency or tokens — it is free insurance. Tunable per client
+    # via cfg['anthropic_max_tokens'].
     max_tokens = int(cfg.get("anthropic_max_tokens") or max_tokens)
     # Proxies (e.g. AgentRouter) reject a generic 'python-requests' User-Agent with
     # 401 "unauthorized client detected"; identify as the Claude CLI (this IS Claude
