@@ -7,7 +7,7 @@
   "copy_provider": "gemini",
   "gemini_model": "gemini-2.5-flash",
   "nvidia_model": "mistralai/mistral-nemotron",
-  "freellmapi_model": ["mistral-large-latest", "mistral-medium-latest", "command-a-03-2025", "glm-4.7-flash", "deepseek-v3.2"],
+  "freellmapi_model": ["openai/gpt-oss-120b", "gemini-3.1-pro-preview", "command-a-03-2025", "mistral-large-latest", "gemini-2.5-flash"],
   "copy": {
     "premium": true,
     "anthropic_model": "claude-opus-4-8",
