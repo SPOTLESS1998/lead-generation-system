@@ -58,6 +58,59 @@ def _client_offerings(cfg):
     return out or list(_DEFAULT_OFFERINGS)
 
 
+def _canon_offering(value, offerings):
+    """Map a model's answer back to the EXACT menu item (case/whitespace-insensitive),
+    or None if it named something not on the menu. This is the guard that keeps the
+    closed-menu invariant: an off-menu answer is rejected, never pitched."""
+    v = (value or "").strip().lower()
+    for o in offerings:
+        if o.strip().lower() == v:
+            return o
+    return None
+
+
+def select_offering(cfg, lead):
+    """Pick the ONE offering (from the client's closed menu) that best fits THIS
+    prospect, judged from their real facts. The discovery segment tag is only a hint,
+    not a cage: a business can surface under one segment's search yet clearly fit a
+    different offering (a marketing agency found via an 'e-commerce' query really needs
+    Lead Gen, not Support). Returns a menu item verbatim, and degrades to the original
+    tag on ANY failure or off-menu answer — so it can never pitch a service we don't
+    sell, and never does worse than today."""
+    tag = (lead.get("ejentic_service") or "").strip()
+    offerings = _client_offerings(cfg)
+    if len(offerings) <= 1:                      # nothing to choose between
+        return tag or (offerings[0] if offerings else "")
+    facts = (lead.get("company_facts") or lead.get("company_description") or "").strip()
+    if not facts:                                # no evidence to re-judge -> trust the tag
+        return tag or offerings[0]
+
+    menu = "\n".join(f"- {o}" for o in offerings)
+    prompt = f"""You match a business to the ONE service (from a fixed menu) that would help it most.
+
+PROSPECT: {lead.get('company_name','')}
+What we actually know about them: {facts}
+They surfaced under a search targeting: "{tag or '(none)'}" — treat this only as a hint; pick it only if it genuinely fits best.
+
+MENU — you MUST choose exactly one, copied VERBATIM (never invent a service that isn't listed):
+{menu}
+
+Choose the single service whose value would be most obvious to THIS business given the facts above.
+Reply with ONLY this JSON, no prose: {{"service": "<one menu item, copied verbatim>", "reason": "<max 12 words>"}}"""
+    try:
+        obj, _ = generate_json(cfg, prompt)
+    except Exception:
+        return tag or offerings[0]
+    chosen = _canon_offering(obj.get("service"), offerings)
+    if not chosen:                               # off-menu / unparseable -> safe fallback
+        return tag or offerings[0]
+    if tag and chosen != tag:
+        reason = str(obj.get("reason") or "").strip()
+        print(f"   🎯 [Fit] {lead.get('company_name','')}: re-matched to '{chosen}' "
+              f"(surfaced under '{tag}')" + (f" — {reason}" if reason else "") + ".")
+    return chosen
+
+
 def generate_strategy(cfg, lead):
     print_step(f"🧠 [Strategist] Analyzing {lead['company_name']}...")
 
@@ -308,6 +361,14 @@ def main(preview=False, limit=None):
                 # generation failure is recorded as an 'error' event (then re-raised
                 # into the rollback below — the observer will open a fault for it).
                 with obs.track(conn, cfg, "draft", subject=lead["email"], run_id=run_id):
+                    # Pick the best-fitting offering from our CLOSED menu before drafting.
+                    # The segment tag is only how they were sourced; re-judging from their
+                    # real facts means we pitch the RIGHT service, not just an on-catalog
+                    # one. Overwrite the tag so the strategist AND its standard-outcome
+                    # figure both key off the fitted choice. Degrades to the tag on failure.
+                    fitted = select_offering(gen_cfg, lead)
+                    if fitted:
+                        lead["ejentic_service"] = fitted
                     brief, _ = generate_strategy(gen_cfg, lead)
                     # Build the prospect's real "free gift": a personalized audit page,
                     # stored now so its link resolves the moment the email is approved.

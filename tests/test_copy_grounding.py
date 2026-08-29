@@ -216,6 +216,71 @@ def test_generate_strategy_locks_to_real_offerings():
 
 
 # --------------------------------------------------------------------------
+# select_offering — re-judge the best-fitting offering from the facts, never off-menu.
+# The segment tag is a hint, not ground truth: a marketing agency surfaced under an
+# 'e-commerce' query should be re-matched to Lead Gen, not left on Support.
+# --------------------------------------------------------------------------
+def test_select_offering_picks_best_fit():
+    print("\n[select_offering: best-fit within the closed menu, safe fallbacks]")
+    cfg = {**CFG, "service_outcomes": {
+        "Localized Multilingual Support Agents": "x",
+        "AI Lead Generation System": "y",
+        "Enterprise Workflow Automation": "z"}}
+    lead = {"company_name": "Socialander",
+            "ejentic_service": "Localized Multilingual Support Agents",
+            "company_facts": "Digital marketing agency serving SMEs."}
+
+    # The judge picks a DIFFERENT but real offering than the tag -> we take it.
+    calls = {"n": 0}
+    def gj_pick(cfg, prompt):
+        calls["n"] += 1
+        return {"service": "AI Lead Generation System", "reason": "marketing agency"}, "fake"
+    lead_agent.generate_json = gj_pick
+    check("re-matches to the better-fitting real offering",
+          lead_agent.select_offering(cfg, lead) == "AI Lead Generation System")
+    check("the selection call actually ran once", calls["n"] == 1)
+
+    # A sloppy-cased / padded answer is canonicalized to the exact menu item.
+    lead_agent.generate_json = lambda c, p: ({"service": "  ai lead generation system "}, "fake")
+    check("canonicalizes a sloppy answer to the exact menu item",
+          lead_agent.select_offering(cfg, lead) == "AI Lead Generation System")
+
+    # An OFF-MENU answer is rejected -> fall back to the tag (never pitch what we don't sell).
+    lead_agent.generate_json = lambda c, p: ({"service": "Ad-Spend Optimization"}, "fake")
+    check("off-menu answer falls back to the segment tag",
+          lead_agent.select_offering(cfg, lead) == "Localized Multilingual Support Agents")
+
+    # Judge down -> fall back to the tag (no regression vs today's behavior).
+    def gj_down(c, p):
+        raise RuntimeError("judge offline")
+    lead_agent.generate_json = gj_down
+    check("selection failure falls back to the segment tag",
+          lead_agent.select_offering(cfg, lead) == "Localized Multilingual Support Agents")
+
+    # Only ONE offering configured -> no choice to make, no LLM call.
+    calls2 = {"n": 0}
+    def gj_count(c, p):
+        calls2["n"] += 1
+        return {"service": "x"}, "fake"
+    lead_agent.generate_json = gj_count
+    got = lead_agent.select_offering(
+        {**CFG, "service_outcomes": {"Only One Service": "x"}},
+        {"company_name": "A", "ejentic_service": "Only One Service", "company_facts": "z"})
+    check("single-offering menu skips the LLM call", calls2["n"] == 0 and got == "Only One Service")
+
+    # No facts to judge on -> trust the tag, don't guess (and don't call the LLM).
+    calls3 = {"n": 0}
+    def gj_count3(c, p):
+        calls3["n"] += 1
+        return {"service": "AI Lead Generation System"}, "fake"
+    lead_agent.generate_json = gj_count3
+    got = lead_agent.select_offering(
+        cfg, {"company_name": "A", "ejentic_service": "Localized Multilingual Support Agents"})
+    check("no facts -> keeps the tag without calling the LLM",
+          calls3["n"] == 0 and got == "Localized Multilingual Support Agents")
+
+
+# --------------------------------------------------------------------------
 # draft_queued._draft_lead_view — reads persisted facts, degrades gracefully
 # --------------------------------------------------------------------------
 def _row(**kw):
@@ -260,6 +325,7 @@ def main():
     test_generate_strategy_grounds_in_facts()
     test_generate_strategy_standardizes_outcome()
     test_generate_strategy_locks_to_real_offerings()
+    test_select_offering_picks_best_fit()
     test_draft_lead_view_reads_facts()
     test_config_gate_default()
     print(f"\n{'='*50}\nRESULT: {PASS} passed, {FAIL} failed\n{'='*50}")

@@ -60,6 +60,7 @@ def test_preview_runs_real_path_but_persists_nothing():
         return ([dict(_FAKE_LEAD)], 0)
 
     discovery.load_leads = _fake_load
+    lead_agent.select_offering = lambda cfg, lead: lead.get("ejentic_service") or ""
     lead_agent.generate_strategy = lambda cfg, lead: ("OUTCOME: standard", "fake")
     lead_agent.budget.copy_cfg = lambda conn, cfg: cfg
     lead_agent.magnet.build_content = lambda cfg, lead, brief: {"headline": "h", "steps": []}
