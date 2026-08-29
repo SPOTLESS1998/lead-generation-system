@@ -148,6 +148,8 @@ check("copy_instructions ties sentence 3 to the brief's exact figure (no inflati
       "never inflate it or swap in a bigger number" in with_link)
 check("copy_instructions locks the pitch to the brief's one service",
       "Pitch ONLY the single service named in the strategy brief" in with_link)
+check("copy_instructions demands a prospect-specific opener (the 7->8 lever)",
+      "could NOT be copy-pasted to any other company" in with_link)
 check("RUBRIC punishes pitching a service outside the brief",
       "a different service than the strategy brief" in quality.RUBRIC)
 
@@ -205,6 +207,18 @@ quality.generate_json = _cap_rev
 quality.revise(qcfg({}), LEAD_FACTS, "Old", "Old body", {"issues": [], "fix_hint": ""}, None, "Ejentic AI")
 check("revise prompt is grounded in company_facts", "Maitama landlords" in _cap2["p"])
 
+# The reviser must ALSO see the strategy brief, or it can't sell the brief's exact
+# SERVICE / OUTCOME figure — and the judge (which DOES see the brief) marks it down.
+_cap3 = {}
+def _cap_rev_brief(cfg, p):
+    _cap3["p"] = p
+    return {"subject": "S", "body": "Hi Ada,\n\nSpecific pitch.\n\nBest,\nEjentic AI"}, "r"
+quality.generate_json = _cap_rev_brief
+quality.revise(qcfg({}), LEAD_FACTS, "Old", "Old body", {"issues": [], "fix_hint": ""},
+               None, "Ejentic AI", "SERVICE: Air-Gapped RAG. OUTCOME: cut lookup time 50%.")
+check("revise prompt carries the strategy brief (SERVICE + OUTCOME)",
+      "Air-Gapped RAG" in _cap3["p"] and "cut lookup time 50%" in _cap3["p"])
+
 
 # --------------------------------------------------------------------------
 # draft_and_polish — the orchestration
@@ -245,6 +259,31 @@ out = quality.draft_and_polish(qcfg({"enabled": True, "min_score": 8, "best_of":
                                LEAD, "brief", None, df)
 check("best_of=2: drafts two candidates", df.calls == 2)
 check("best_of=2: keeps the higher-scoring one", out == ("S2", "Body 2", "provB"))
+
+# F) Champion / no-regression: when a revision scores WORSE, the next pass must rewrite
+#    from the best draft so far — never from the regression — and the highest-scoring
+#    version is returned. (The old loop fed the latest attempt forward and would fail this.)
+_rev_prompts = []
+_cscore = {"i": 0}
+_CHAMP_SCORES = [5, 4, 8]   # initial draft, revision 1 (regresses), revision 2 (clears the bar)
+def _champ_gj(cfg, prompt):
+    if "ruthless cold-email editor" in prompt:              # score()
+        s = _CHAMP_SCORES[min(_cscore["i"], len(_CHAMP_SCORES) - 1)]
+        _cscore["i"] += 1
+        return {"score": s, "issues": ["generic"], "fix_hint": "cite a real detail"}, "judge"
+    if "strict editor rejected" in prompt:                  # revise()
+        _rev_prompts.append(prompt)
+        body = "Rev1 body WORSE" if len(_rev_prompts) == 1 else "Rev2 body BEST"
+        return {"subject": f"R{len(_rev_prompts)}", "body": f"{body}\n\nBest,\nEjentic AI"}, "reviser"
+    raise AssertionError("generate_json called with an unexpected prompt")
+quality.generate_json = _champ_gj
+df = DraftFn([("D", "Draft body CHAMP", "provA")])
+out = quality.draft_and_polish(qcfg({"enabled": True, "min_score": 8, "max_revisions": 2}),
+                               LEAD, "brief", None, df)
+check("champion: returns the highest-scoring version (revision 2)", out[0] == "R2")
+check("champion: took two revision passes", len(_rev_prompts) == 2)
+check("champion: pass 2 rewrote from the champion draft, not the regressed revision 1",
+      "Draft body CHAMP" in _rev_prompts[1] and "Rev1 body WORSE" not in _rev_prompts[1])
 
 
 print(f"\n{'='*50}\n  RESULT: {PASS} passed, {FAIL} failed\n{'='*50}")

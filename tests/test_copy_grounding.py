@@ -316,7 +316,7 @@ def test_config_gate_default():
     print("\n[config: quality_gate default bumped to best_of=2]")
     gate = config.DEFAULTS["copy"]["quality_gate"]
     check("best_of default is 2", gate["best_of"] == 2)
-    check("max_revisions still 1", gate["max_revisions"] == 1)
+    check("max_revisions bumped to 2 (allow a 2nd targeted rewrite)", gate["max_revisions"] == 2)
     check("gate still enabled by default", gate["enabled"] is True)
 
 

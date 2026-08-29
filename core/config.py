@@ -47,7 +47,7 @@ DEFAULTS = {
         "quality_gate": {                    # LLM-as-judge: score every draft, rewrite weak ones
             "enabled": True,
             "min_score": 8,                  # 1-10; drafts below this get a rewrite pass
-            "max_revisions": 1,              # rewrite passes before accepting the best so far
+            "max_revisions": 2,              # rewrite passes before accepting the best so far
             "best_of": 2,                    # draft N candidates, keep the highest-scoring (more robust on a flaky free chain than a longer serial revise chain)
         },
     },

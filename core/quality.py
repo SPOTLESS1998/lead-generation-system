@@ -69,6 +69,7 @@ def copy_instructions(sender_name, magnet_url):
     return f"""Follow this framework exactly:
 - Greet them by first name if one is given; if the name is unknown or a generic mailbox, open with exactly "Hi there," — NEVER write a literal placeholder like "Name" or "[First Name]".
 - Sentence 1 — a specific, TRUE, FLATTERING observation about THEIR business, drawn only from the facts you were given (never a generic compliment, never an invented fact). Lead with their strongest, most differentiating fact; NEVER open by highlighting a negative or operational detail (a complaints line, a support/error number, a disclaimer, a problem) — that insults the reader.
+- Make that opener so specific to THIS prospect that it could NOT be copy-pasted to any other company — name the real service, product, market, or detail from the facts. A line that would fit any business in their industry is the gap between a 7 and an 8; earn the 8.
 - Sentence 2 — the concrete operational pain that observation implies, in plain words.
 - Sentence 3 — the outcome from the brief, stated with its EXACT figure and timeframe (never inflate it or swap in a bigger number).
 - Pitch ONLY the single service named in the strategy brief's SERVICE line — never offer a different or extra service, even if their industry suggests one (do not pitch ad-spend, SEO, or web design). Sell exactly what the brief names.
@@ -119,7 +120,7 @@ Subject: {subject}
 {RUBRIC}
 
 Reply with ONLY this JSON, no prose, no markdown fences:
-{{"score": <integer 1-10>, "issues": ["<short phrase>", ...], "fix_hint": "<ONE concrete, actionable instruction that would raise the score the most>"}}"""
+{{"score": <integer 1-10>, "issues": ["<short phrase>", ...], "fix_hint": "<the SINGLE change that raises the score the most — name the biggest rubric deduction and exactly how to fix it>"}}"""
     try:
         obj, _ = generate_json(cfg, prompt)
     except Exception:
@@ -136,8 +137,12 @@ Reply with ONLY this JSON, no prose, no markdown fences:
             "fix_hint": str(obj.get("fix_hint") or "").strip()}
 
 
-def revise(cfg, lead, subject, body, critique, magnet_url, sender_name):
-    """Rewrite a draft to address the editor's critique. Returns (subject, body)."""
+def revise(cfg, lead, subject, body, critique, magnet_url, sender_name, brief=""):
+    """Rewrite a draft to address the editor's critique. Returns (subject, body).
+
+    `brief` is the SAME strategy brief the judge scores against. The reviser MUST see it,
+    or it can't obey copy_instructions' "sell exactly the brief's SERVICE / use its exact
+    OUTCOME figure" rules — and the judge then marks it down for a brief it never read."""
     fix_hint = (critique or {}).get("fix_hint") or "Make it more specific and human."
     issues = ", ".join((critique or {}).get("issues") or []) or "generic / not specific enough"
     facts = lead.get("company_facts") or lead.get("company_description") or ""
@@ -146,6 +151,9 @@ A strict editor rejected the draft below. Rewrite it so it fully earns a reply. 
 
 PROSPECT: {lead.get('first_name','')} {lead.get('last_name','')} at {lead.get('company_name','')}
 What we actually know about them (ground it in THESE facts; keep the specific one the draft already cites, don't invent new ones): {facts}
+
+STRATEGY BRIEF you must follow (sell EXACTLY the SERVICE it names — never a different or extra one; state its OUTCOME with the EXACT figure, never a bigger number):
+{brief or '(none)'}
 
 EDITOR'S ISSUES: {issues}
 EDITOR'S #1 FIX: {fix_hint}
@@ -204,21 +212,27 @@ def draft_and_polish(cfg, lead, brief, magnet_url, draft_fn):
     cur = sc["score"] if sc else min_score
     print(f"   🧪 [Quality] draft scored {cur}/10" + (f" (best of {n})" if n > 1 else "") + ".")
 
-    # 3) Rewrite while below the bar, keeping the highest-scoring version seen.
-    best = (s, b, cur)
+    # 3) Rewrite while below the bar. Each pass rewrites from the BEST draft so far
+    #    (the champion) using that draft's own critique — never from a revision that
+    #    scored worse, so a bad pass can't compound. Repeated passes still vary because
+    #    the free chain is non-deterministic. We always return the champion.
+    best = (s, b, cur, sc)                        # (subject, body, score, critique)
     rev = 0
-    while cur < min_score and rev < max_rev:
+    while best[2] < min_score and rev < max_rev:
         rev += 1
         try:
-            ns, nb = revise(cfg, lead, s, b, sc, magnet_url, sender_name)
+            ns, nb = revise(cfg, lead, best[0], best[1], best[3],
+                            magnet_url, sender_name, brief)
         except Exception as e:
             print(f"   🧪 [Quality] revision {rev} failed ({e}); keeping best draft.")
             break
         nsc = score(cfg, lead, ns, nb, brief)
-        nval = nsc["score"] if nsc else cur
+        if nsc is None:
+            print(f"   🧪 [Quality] revision {rev} could not be scored; keeping champion.")
+            continue
+        nval = nsc["score"]
         print(f"   🧪 [Quality] revision {rev} scored {nval}/10.")
         if nval >= best[2]:
-            best = (ns, nb, nval)
-        s, b, sc, cur = ns, nb, (nsc or sc), nval
+            best = (ns, nb, nval, nsc)
     print(f"   🧪 [Quality] final {best[2]}/10 (min {min_score}, {rev} revision(s)).")
     return best[0], best[1], prov
