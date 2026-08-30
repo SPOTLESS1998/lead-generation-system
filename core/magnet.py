@@ -143,8 +143,15 @@ def render_html(cfg, content: dict) -> str:
     headline = esc(content.get("headline") or f"AI Opportunity Audit for {company}")
     bottleneck = esc(content.get("bottleneck") or "")
     cta = esc(content.get("cta") or "")
+    website = esc((cfg.get("website_url") or "").strip())
 
     prepared_line = f"Prepared for {prepared_for} at {company}" if prepared_for else f"Prepared for {company}"
+    # Optional: let the prospect jump to the main site and explore (set client config "website_url").
+    brand_top = (f'<a href="{website}" style="color:#7f8c8d;text-decoration:none;">{client_name} · Free AI Audit</a>'
+                 if website else f"{client_name} · Free AI Audit")
+    explore_cta = (f'<p style="text-align:center;margin:22px 0 0;">'
+                   f'<a href="{website}" style="color:#2980b9;font-weight:bold;text-decoration:none;">'
+                   f'Explore what {client_name} builds →</a></p>' if website else "")
 
     steps_html = ""
     for i, step in enumerate(content.get("steps") or [], start=1):
@@ -164,7 +171,7 @@ def render_html(cfg, content: dict) -> str:
 </head>
 <body style="font-family:'Inter',Arial,sans-serif;background:#f4f7f6;color:#333;margin:0;padding:40px 16px;">
   <div style="max-width:760px;margin:auto;background:#fff;padding:40px;border-radius:12px;box-shadow:0 4px 15px rgba(0,0,0,0.08);border-top:5px solid #4CAF50;">
-    <p style="color:#7f8c8d;font-size:13px;text-transform:uppercase;letter-spacing:1px;margin:0 0 8px;">{client_name} · Free AI Audit</p>
+    <p style="color:#7f8c8d;font-size:13px;text-transform:uppercase;letter-spacing:1px;margin:0 0 8px;">{brand_top}</p>
     <h1 style="color:#2c3e50;margin:0 0 6px;">{headline}</h1>
     <p style="color:#7f8c8d;font-size:17px;margin:0 0 24px;">{prepared_line}</p>
     <hr style="border:none;border-top:1px solid #eee;margin:0 0 24px;">
@@ -175,6 +182,7 @@ def render_html(cfg, content: dict) -> str:
     <div style="margin-top:32px;padding:20px;background:#e8f4f8;border-radius:8px;">
       <strong style="color:#2c3e50;">{cta}</strong>
     </div>
+    {explore_cta}
     <p style="margin-top:28px;color:#aaa;font-size:12px;">This page was prepared specifically for {company} by {client_name}.</p>
   </div>
 </body>
