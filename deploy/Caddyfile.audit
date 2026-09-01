@@ -1,0 +1,37 @@
+# ── Ejentic audit + approval server ─────────────────────────────────────────
+# Paste this block into the VPS Caddyfile (the same file already serving
+# ejentic.ai). Caddy auto-provisions a real HTTPS certificate for this name the
+# moment the DNS record
+#
+#     audit.ejentic.ai   A   88.96.57.79
+#
+# is live. One subdomain serves EVERY client — they are told apart by the
+# <client> segment already in the route (/magnet/<client>/<token>).
+
+audit.ejentic.ai {
+	encode gzip
+
+	# ── PRIVATE ──────────────────────────────────────────────────────────────
+	# The internal approve/decline dashboard + appointments view. These must
+	# NEVER be public once this is on a real domain (they let anyone approve
+	# leads or read your pipeline). Password-protect them.
+	#
+	# Generate the password hash ON THE VPS with:   caddy hash-password
+	# then replace REPLACE_WITH_BCRYPT_HASH below with what it prints.
+	# (Older Caddy versions use the one-word directive `basicauth` instead of
+	#  `basic_auth` — swap it if Caddy complains on reload.)
+	@private path / /approve/* /decline/* /appointments /appointments/*
+	basic_auth @private {
+		ejentic REPLACE_WITH_BCRYPT_HASH
+	}
+
+	# ── PUBLIC ───────────────────────────────────────────────────────────────
+	# Everything else is prospect-facing and stays open:
+	#   /magnet/<client>/<token>   the personalized audit page (the "free gift")
+	#   /unsubscribe/<token>       CAN-SPAM one-click opt-out
+	#   /interested/<token>        one-click "yes, book me"
+	#   /not-interested/<token>    one-click "no thanks"
+	#   /health                    uptime check
+	# All routes (private + public) are served by the Flask app on localhost:5002.
+	reverse_proxy 127.0.0.1:5002
+}

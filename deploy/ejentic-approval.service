@@ -1,0 +1,22 @@
+[Unit]
+Description=Ejentic lead-gen approval + audit server (Flask, serves all clients)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/leadgen
+# Flask's default host is 127.0.0.1, so this binds to localhost:5002 ONLY.
+# The public internet never reaches it directly — Caddy (on this same box)
+# is the only thing that proxies to it, over HTTPS on 443. See deploy/Caddyfile.audit.
+Environment=APPROVAL_PORT=5002
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/leadgen/venv/bin/python scripts/approval_server.py
+# Restart on crash AND on server reboot — this is the "works with a dead laptop" part.
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
