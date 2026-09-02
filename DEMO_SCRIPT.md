@@ -25,7 +25,7 @@ you approve with one click → it sends → reads the reply → books the meetin
    ```
    CLIENT=demo venv/bin/python scripts/approval_server.py
    ```
-5. Open two browser tabs: **your Gmail** and **http://localhost:5001**
+5. Open two browser tabs: **your Gmail** and **http://localhost:5002**
 
 Now press record. Every command below goes in **Tab B**.
 

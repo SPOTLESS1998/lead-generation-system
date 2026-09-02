@@ -2,13 +2,13 @@
   "client_name": "Ejentic AI",
   "from_name": "Ejentic AI",
   "reply_to": null,
-  "physical_address": "Ejentic AI, 12 Admiralty Way, Lekki Phase 1, Lagos (DEMO address — replace before any live send)",
+  "physical_address": "Ejentic AI, 12 Admiralty Way, Lekki Phase 1, Lagos",
   "unsubscribe_base_url": "http://localhost:5002",
   "copy_provider": "gemini",
   "providers": ["freellmapi", "gemini", "nvidia"],
   "freellmapi_model": ["mistral-large-latest", "mistral-medium-latest", "meta-llama/llama-4-scout-17b-16e-instruct", "command-a-03-2025", "glm-4.7-flash", "deepseek-v3.2"],
   "copy": {
-    "premium": true,
+    "premium": false,
     "anthropic_model": "claude-opus-4-8",
     "premium_daily_usd_cap": null
   },
