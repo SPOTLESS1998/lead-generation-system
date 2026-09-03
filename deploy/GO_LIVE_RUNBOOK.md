@@ -1,5 +1,11 @@
 # Go-Live Runbook (plain-English, do-this-in-order)
 
+> **⚠️ DOMAIN STATUS (updated 2026-09-03).** `ejentic.xyz` **is not registered yet** —
+> registering it is the #1 go-live blocker (`ejentic.ai` / `.com` belong to other
+> people). Also: this runbook assumes the website is *already* live on the domain; it
+> isn't yet on `ejentic.xyz`, so any "already serving / already points at the box" note
+> here is part of **THIS** deploy, not a given. Full note in `deploy/GO-LIVE.md`.
+
 **Companion to `deploy/GO-LIVE.md`.** That file explains *why* we host centrally
 and where the data lives. This file is the *exactly-what-to-type*, in order, for
 someone doing this the first time.
@@ -23,9 +29,9 @@ You cannot finish go-live without these. Get all of them up front.
 **A1. DNS record — NEED FROM YOU.**
 Add this record at the domain registrar / DNS host:
 ```
-audit.ejentic.ai   A   88.96.57.79
+audit.ejentic.xyz   A   88.96.57.79
 ```
-(Also confirm `ejentic.ai` and `www.ejentic.ai` already point at the same box —
+(Also confirm `ejentic.xyz` and `www.ejentic.xyz` already point at the same box —
 if the website is already live they do.) Caddy cannot get an HTTPS certificate
 until this record exists and has propagated, so this must be done first.
 
@@ -76,7 +82,7 @@ not invent new ones.
 **B1. Confirm DNS is live (do this before Caddy).**
 From your Mac:
 ```
-dig +short audit.ejentic.ai
+dig +short audit.ejentic.xyz
 ```
 It must print `88.96.57.79`. If it prints nothing, DNS (A1) has not propagated
 yet — wait and re-check. Do not continue until it resolves.
@@ -136,8 +142,8 @@ in the service file). The public internet never reaches it directly — Caddy do
 
 **B6. Add the Caddy block and set the dashboard password.**
 1. Generate the password **hash** now — see **Part D** — and copy the hash it prints.
-2. Open the server's main Caddyfile (the same one already serving `ejentic.ai`).
-3. Paste in the whole `audit.ejentic.ai { ... }` block from
+2. Open the server's main Caddyfile (the same one already serving `ejentic.xyz`).
+3. Paste in the whole `audit.ejentic.xyz { ... }` block from
    `deploy/Caddyfile.audit`.
 4. In that block, replace `REPLACE_WITH_BCRYPT_HASH` with the hash from step 1.
    Leave the username `ejentic` as-is.
@@ -145,15 +151,15 @@ in the service file). The public internet never reaches it directly — Caddy do
    ```
    sudo systemctl reload caddy
    ```
-Caddy will automatically fetch a real HTTPS certificate for `audit.ejentic.ai`
+Caddy will automatically fetch a real HTTPS certificate for `audit.ejentic.xyz`
 now that DNS (A1) is live. (If Caddy complains about `basic_auth`, this is an
 older Caddy — change it to the one-word `basicauth` and reload again.)
 
 **B7. Flip the safe config values.** Edit `clients/ejentic/config.json` and:
 - Change `unsubscribe_base_url` from `http://localhost:5002` to
-  `https://audit.ejentic.ai` (so every link in every email points at the real,
+  `https://audit.ejentic.xyz` (so every link in every email points at the real,
   always-on domain).
-- **Add** a `website_url` key set to `https://ejentic.ai` (this key is not in the
+- **Add** a `website_url` key set to `https://ejentic.xyz` (this key is not in the
   file yet; it turns on the "Explore what Ejentic builds →" link on each audit page).
 - Set `physical_address` to the real address from A2 (delete the `REPLACE-ME` text).
 
@@ -165,10 +171,10 @@ or your next rsync will overwrite it.
 
 **B8. Smoke test — still no real sends.**
 - Open a real magnet link over HTTPS, e.g.
-  `https://audit.ejentic.ai/magnet/ejentic/<token>` → the audit page should load.
-- Open `https://audit.ejentic.ai/` → it should **demand the password**.
+  `https://audit.ejentic.xyz/magnet/ejentic/<token>` → the audit page should load.
+- Open `https://audit.ejentic.xyz/` → it should **demand the password**.
 - Click an unsubscribe / interested link → it should work.
-- `curl -s https://audit.ejentic.ai/health` → should respond OK.
+- `curl -s https://audit.ejentic.xyz/health` → should respond OK.
 If all four pass, the server side of go-live is done. **Stop here** until the
 owner says to proceed to Part C.
 
@@ -254,7 +260,7 @@ VPS.
 ## BOTTOM LINE
 
 **What I need FROM YOU, in order:**
-1. **DNS:** confirm `audit.ejentic.ai A 88.96.57.79` is added (A1).
+1. **DNS:** confirm `audit.ejentic.xyz A 88.96.57.79` is added (A1).
 2. **Postal address:** the real CAN-SPAM mailing address (A2).
 3. **Leads:** confirm auto-discovery is the source, *or* hand over the real
    contacts to fill `clients/ejentic/leads.csv` (A3).

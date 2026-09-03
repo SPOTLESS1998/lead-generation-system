@@ -1,14 +1,14 @@
 # ── Ejentic audit + approval server ─────────────────────────────────────────
-# Paste this block into the VPS Caddyfile (the same file already serving
-# ejentic.ai). Caddy auto-provisions a real HTTPS certificate for this name the
+# Paste this block into the VPS Caddyfile (the same file that serves the main
+# site, once ejentic.xyz is registered and the site is deployed there). Caddy auto-provisions a real HTTPS certificate for this name the
 # moment the DNS record
 #
-#     audit.ejentic.ai   A   88.96.57.79
+#     audit.ejentic.xyz   A   88.96.57.79
 #
 # is live. One subdomain serves EVERY client — they are told apart by the
 # <client> segment already in the route (/magnet/<client>/<token>).
 
-audit.ejentic.ai {
+audit.ejentic.xyz {
 	encode gzip
 
 	# ── PRIVATE ──────────────────────────────────────────────────────────────

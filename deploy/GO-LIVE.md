@@ -1,8 +1,18 @@
 # Go-live: hosting the approval + audit server on the VPS
 
+> **⚠️ DOMAIN STATUS (updated 2026-09-03) — read before using this runbook.**
+> The domain is the **#1 go-live blocker: `ejentic.xyz` is not registered yet**
+> (the old `ejentic.ai` / `.com` are owned by other people). Register `ejentic.xyz`
+> first; then everything below applies. **Second caveat:** this runbook was written
+> assuming the Ejentic **website was already live** on the domain and we were only
+> *adding* the audit subdomain. That's no longer true — the site isn't live on
+> `ejentic.xyz` yet either. So wherever a step says "the Caddyfile already serving
+> `ejentic.xyz`" or "confirm `ejentic.xyz` already points at the box," treat that as
+> **part of this same deploy**, not a pre-existing fact.
+
 **Decision (2026-09-01):** the approval/audit server runs centrally on the Ejentic
 VPS (`88.96.57.79`, same box as the website), behind Caddy, at **one subdomain
-`audit.ejentic.ai`** that serves every client. Deploy when the domain's DNS is
+`audit.ejentic.xyz`** that serves every client. Deploy when the domain's DNS is
 live (planned this week). Nothing goes live — and no real emails are sent — until
 that domain exists AND it's an explicit decision.
 
@@ -14,7 +24,7 @@ website Cline already deployed. Clients host **nothing** — a client with no
 website and a machine that's never on still gets working audit links, because
 their links are just a path on our always-on domain:
 
-    https://audit.ejentic.ai/magnet/<client>/<token>
+    https://audit.ejentic.xyz/magnet/<client>/<token>
 
 ## ⚠️ The one wrinkle: where the data lives
 The magnet (audit) pages and lead state are stored in a **SQLite database the
@@ -28,7 +38,7 @@ machine laptop-independent, not just the links. The only open question is where
 the API keys / freellmapi gateway live (see step 2).
 
 ## Go-live checklist (this week, once the domain is bought)
-1. **DNS:** add `audit.ejentic.ai  A  88.96.57.79` (plus `ejentic.ai` / `www` for
+1. **DNS:** add `audit.ejentic.xyz  A  88.96.57.79` (plus `ejentic.xyz` / `www` for
    the site itself if not already done).
 2. **Get the code + a venv onto the VPS** at `/home/ubuntu/leadgen`
    (rsync from the Mac, same pattern as the website's `scripts/deploy.sh`;
@@ -42,14 +52,14 @@ the API keys / freellmapi gateway live (see step 2).
    `systemctl is-active ejentic-approval`  → should print `active`.
 4. **Caddy:** paste `deploy/Caddyfile.audit` into the VPS Caddyfile, set the
    dashboard password (`caddy hash-password`), then `sudo systemctl reload caddy`.
-   Caddy auto-issues HTTPS for `audit.ejentic.ai`.
+   Caddy auto-issues HTTPS for `audit.ejentic.xyz`.
 5. **Flip config** in `clients/ejentic/config.json`:
-   - `unsubscribe_base_url` → `https://audit.ejentic.ai`
-   - `website_url` → `https://ejentic.ai` (enables the "Explore what Ejentic
+   - `unsubscribe_base_url` → `https://audit.ejentic.xyz`
+   - `website_url` → `https://ejentic.xyz` (enables the "Explore what Ejentic
      builds →" link on every audit page)
 6. **Smoke test (no sending):**
    - open a real `…/magnet/ejentic/<token>` link over HTTPS → the audit page loads
-   - open `https://audit.ejentic.ai/` → it should demand the password
+   - open `https://audit.ejentic.xyz/` → it should demand the password
    - click an unsubscribe / interested link → it works
 7. **Only then** consider real sends — a separate, explicit decision. Sending
    mode stays `controlled` and the `physical_address` placeholder must be filled
