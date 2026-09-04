@@ -9,7 +9,7 @@
   "nvidia_model": "mistralai/mistral-nemotron",
   "freellmapi_model": ["openai/gpt-oss-120b", "gemini-3.1-pro-preview", "command-a-03-2025", "mistral-large-latest", "gemini-2.5-flash"],
   "copy": {
-    "premium": true,
+    "premium": false,
     "anthropic_model": "claude-opus-4-8",
     "premium_daily_usd_cap": null
   },
