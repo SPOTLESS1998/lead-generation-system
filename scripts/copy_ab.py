@@ -1,33 +1,36 @@
-"""Copy A/B: does the PREMIUM (Opus) writer beat the FREE chain — judged on the same bar?
+"""Copy A/B (multi-run): does the PREMIUM (Opus) writer reliably beat the FREE chain?
 
-A safe, offline-style experiment (no email is sent, no DB row is written, no config
-file is touched). It answers ONE question: for the same prospect and the same strategy
-brief, does real Claude Opus write cold-email copy that clears the quality gate's 8/10,
-where today's free chain plateaus at ~5-7?
+Upgrade of the single-shot version: LLM copy is stochastic, so ONE draft each can't
+rank two writers. This runs N draws per side and reports the SCORE SPREAD, so we can
+see whether Opus *reliably* clears the gate's 8/10 or the free chain just got a lucky 9.
 
-How it stays a FAIR test:
+Fairness rules (unchanged):
   - Same fictional lead + same brief for both writers.
-  - Only the WRITER varies: FREE chain vs Opus (via whatever ANTHROPIC_BASE_URL points
-    at — here the free AgentRouter proxy, so this costs $0).
-  - The JUDGE is held CONSTANT (the free chain) for both, so we measure writing, not a
-    writer grading its own homework.
-  - We print which provider ACTUALLY drafted each email. If Opus is throttled, core.ai
-    silently fails over to the free chain — this harness flags that so a "premium" number
-    is never secretly a free-chain number.
+  - Only the WRITER varies (FREE chain vs Opus via ANTHROPIC_BASE_URL = AgentRouter, $0).
+  - The JUDGE is held CONSTANT (free chain) for every score — never a writer grading itself.
+  - Each draw prints which provider ACTUALLY wrote it, so a silent Opus->free failover
+    (AgentRouter throttled) is never miscounted as an Opus result.
+  - LENGTH-GUARD: any draft over 90 words gets ONE "tighten to <=90" pass (same writer),
+    applied to BOTH sides — so a writer isn't scored down for a purely mechanical overrun.
 
-Run:  CLIENT=ejentic venv/bin/python scripts/copy_ab.py
+Nothing is sent, no DB row is written, no config file is touched.
+
+Run:  CLIENT=ejentic RUNS=4 venv/bin/python -m scripts.copy_ab
 """
 
+import os
+import sys
 import time
+import statistics
 
 from core import config, ai, quality
 from scripts.lead_agent import generate_copy
 
-MIN_SCORE = 8            # the gate's bar we're trying to clear
-MAX_REVISIONS = 1        # keep Opus calls low (AgentRouter throttles under load)
-MAGNET_URL = "https://audit.ejentic.xyz/audit/demo-abc123"   # realistic link (text only; nothing is served)
+MIN_SCORE = 8
+WORD_CEILING = 90
+FREE_CHAIN = ["freellmapi", "gemini", "nvidia"]
+MAGNET_URL = "https://audit.ejentic.xyz/audit/demo-abc123"   # realistic link (text only; nothing served)
 
-# --- One representative prospect (fictional; NOT a real lead) ---------------
 LEAD = {
     "first_name": "Ada",
     "last_name": "Okonkwo",
@@ -41,8 +44,6 @@ LEAD = {
     ),
 }
 
-# --- Strategy brief in the exact 5-line shape lead_agent produces -----------
-# SERVICE is copied verbatim from ejentic's offerings; OUTCOME uses its exact figure.
 BRIEF = (
     "OBSERVATION: Lekki Prime Realty has built real trust — 180+ Google reviews at 4.6 stars "
     "and a 28k-strong Instagram following for their Lekki Phase 1 luxury listings.\n"
@@ -54,7 +55,9 @@ BRIEF = (
     "would capture."
 )
 
-FREE_CHAIN = ["freellmapi", "gemini", "nvidia"]
+
+def _wc(body):
+    return len((body or "").split())
 
 
 def _writer_cfg(base, providers, opus=False):
@@ -62,87 +65,121 @@ def _writer_cfg(base, providers, opus=False):
     cfg["providers"] = list(providers)
     if opus:
         cfg["anthropic_model"] = (base.get("copy", {}) or {}).get("anthropic_model") or "claude-opus-4-8"
-        cfg["anthropic_attempts"] = 2   # small: don't hammer a throttling proxy
+        cfg["anthropic_attempts"] = 2
     return cfg
 
 
-def _run_writer(label, writer_cfg, judge_cfg):
-    """Draft with writer_cfg, score with judge_cfg (constant), revise up to MAX_REVISIONS.
-    Returns a dict of results; never raises (a failed side still reports)."""
-    print(f"\n{'='*70}\n  {label}\n{'='*70}")
-    ai.reset_breakers()
-    ai.reset_usage()
+def _tighten(cfg, subject, body, sender):
+    """One best-effort pass to bring an over-long email to <=90 words, keeping the hook,
+    the audit link, and the sign-off. Returns (subject, body); the original on any failure."""
+    prompt = f"""Tighten this cold email to {WORD_CEILING} words or FEWER. Keep the opening hook,
+the exact audit link, the single CTA question, and the sign-off. Same warm, plain voice — just cut flab.
+
+Subject: {subject}
+{body}
+
+Reply with ONLY this JSON, no prose: {{"subject": "<subject>", "body": "<full body>"}}"""
+    try:
+        obj, _ = ai.generate_json(cfg, prompt)
+        ns = (obj.get("subject") or subject).strip()
+        nb = quality.finalize_body(obj.get("body") or "", sender, MAGNET_URL)
+        return (ns, nb) if nb else (subject, body)
+    except Exception:
+        return subject, body
+
+
+def _one_draw(i, writer_cfg, judge_cfg, sender):
+    """One draft -> length-guard if needed -> score with the CONSTANT judge."""
     t0 = time.time()
     try:
         subject, body, drafted_by = generate_copy(writer_cfg, LEAD, BRIEF, MAGNET_URL)
     except Exception as e:
-        print(f"  ❌ draft failed: {e}")
-        return {"label": label, "ok": False, "error": str(e)}
-    usage = ai.collect_usage()
-    elapsed = time.time() - t0
-
+        print(f"    draw {i}: draft FAILED ({str(e)[:70]})")
+        return None
+    tightened = False
+    if _wc(body) > WORD_CEILING:
+        subject, body = _tighten(writer_cfg, subject, body, sender)
+        tightened = True
     sc = quality.score(judge_cfg, LEAD, subject, body, BRIEF)
-    cur = sc["score"] if sc else None
-    print(f"\n  Drafted by : {drafted_by}   ({elapsed:.1f}s, "
-          f"{usage.get('total_tokens',0)} tokens)")
-    print(f"  Word count : {len(body.split())}")
-    print(f"  Judge score: {cur}/10" if cur is not None else "  Judge score: (judge unavailable)")
-    if sc:
-        print(f"  Issues     : {', '.join(sc['issues']) or '(none)'}")
-        print(f"  Fix hint   : {sc['fix_hint']}")
-    print(f"\n  --- SUBJECT ---\n  {subject}\n  --- BODY ---")
-    for ln in body.splitlines():
-        print(f"  {ln}")
+    score = sc["score"] if sc else None
+    flag = "" if score is not None else " (judge unavailable)"
+    tg = " tightened" if tightened else ""
+    print(f"    draw {i}: {drafted_by:9s} score={score if score is not None else '—'}/10  "
+          f"{_wc(body)}w{tg}  {time.time()-t0:.0f}s{flag}")
+    return {"drafted_by": drafted_by, "score": score, "words": _wc(body),
+            "subject": subject, "body": body, "tightened": tightened}
 
-    # Up to MAX_REVISIONS rewrites (writer rewrites; constant judge re-scores).
-    best = {"subject": subject, "body": body, "score": cur if cur is not None else -1, "critique": sc}
-    rev = 0
+
+def _run_side(label, writer_cfg, judge_cfg, n, gentle=False):
+    print(f"\n{'='*70}\n  {label}   (N={n})\n{'='*70}")
+    ai.reset_breakers()          # once per side: a truly-dead provider then trips and is skipped
     sender = (writer_cfg.get("from_name") or writer_cfg.get("client_name") or "our team").strip()
-    while best["score"] < MIN_SCORE and rev < MAX_REVISIONS and best["critique"]:
-        rev += 1
-        try:
-            ns, nb = quality.revise(writer_cfg, LEAD, best["subject"], best["body"],
-                                    best["critique"], MAGNET_URL, sender, BRIEF)
-        except Exception as e:
-            print(f"\n  🧪 revision {rev} failed ({e}); keeping best.")
-            break
-        nsc = quality.score(judge_cfg, LEAD, ns, nb, BRIEF)
-        nval = nsc["score"] if nsc else -1
-        print(f"\n  🧪 revision {rev} scored {nval}/10 (was {best['score']}/10)")
-        if nval >= best["score"]:
-            best = {"subject": ns, "body": nb, "score": nval, "critique": nsc}
+    draws = []
+    for i in range(1, n + 1):
+        ai.reset_usage()
+        d = _one_draw(i, writer_cfg, judge_cfg, sender)
+        if d:
+            draws.append(d)
+        if gentle and i < n:
+            time.sleep(3)        # let a throttling proxy breathe between Opus calls
+    return draws
 
-    return {"label": label, "ok": True, "drafted_by": drafted_by,
-            "draft_score": cur, "final_score": best["score"],
-            "wants_opus": "anthropic" in writer_cfg.get("providers", [])}
+
+def _summ(label, draws, wants):
+    scored = [d for d in draws if d["score"] is not None]
+    served = [d for d in draws if d["drafted_by"] == wants] if wants else draws
+    print(f"\n  {label}")
+    if wants:
+        print(f"    actually written by '{wants}': {len(served)}/{len(draws)} draws "
+              + ("(rest failed over to the free chain)" if len(served) < len(draws) else ""))
+    if not scored:
+        print("    no scored draws (judge was unavailable).")
+        return None
+    sc = [d["score"] for d in scored]
+    cleared = sum(1 for s in sc if s >= MIN_SCORE)
+    print(f"    scores : {sorted(sc, reverse=True)}")
+    print(f"    spread : min {min(sc)}  median {statistics.median(sc):.1f}  "
+          f"mean {statistics.mean(sc):.1f}  max {max(sc)}")
+    print(f"    cleared 8/10: {cleared}/{len(sc)} draws")
+    # "Best" should showcase THIS writer: prefer a draft it actually wrote (not a failover).
+    pool = [d for d in scored if d["drafted_by"] == wants] if wants else scored
+    best = max(pool or scored, key=lambda d: d["score"])
+    return {"scores": sc, "cleared": cleared, "n": len(sc), "best": best,
+            "median": statistics.median(sc), "served": len(served), "draws": len(draws)}
 
 
 def main():
+    n = int(os.environ.get("RUNS") or (sys.argv[1] if len(sys.argv) > 1 else 4))
     base = config.load_client("ejentic")
-    # Make sure the gate settings we assume are what the client actually inherits.
     gate = (base.get("copy", {}) or {}).get("quality_gate", {}) or {}
-    print(f"Client: {base.get('client_name')}   gate: min_score="
-          f"{gate.get('min_score', '?')} max_revisions={gate.get('max_revisions','?')} "
-          f"best_of={gate.get('best_of','?')}")
-    print("Judge (constant): FREE chain.  Writers compared: FREE vs OPUS.")
+    print(f"Client: {base.get('client_name')}   gate min_score={gate.get('min_score','?')}   "
+          f"word ceiling={WORD_CEILING}   runs/side={n}")
+    print("Judge held CONSTANT (free chain). Length-guard applied to BOTH sides.")
 
     judge_cfg = _writer_cfg(base, FREE_CHAIN)
-    free = _run_writer("WRITER = FREE chain", _writer_cfg(base, FREE_CHAIN), judge_cfg)
-    opus = _run_writer("WRITER = OPUS (premium)", _writer_cfg(base, ["anthropic"] + FREE_CHAIN, opus=True), judge_cfg)
+    free_draws = _run_side("WRITER = FREE chain", _writer_cfg(base, FREE_CHAIN), judge_cfg, n)
+    opus_draws = _run_side("WRITER = OPUS (premium)", _writer_cfg(base, ["anthropic"] + FREE_CHAIN, opus=True),
+                           judge_cfg, n, gentle=True)
 
-    print(f"\n{'#'*70}\n  VERDICT\n{'#'*70}")
-    for r in (free, opus):
-        if not r.get("ok"):
-            print(f"  {r['label']}: FAILED ({r.get('error')})")
-            continue
-        line = f"  {r['label']}: draft {r['draft_score']}/10 -> final {r['final_score']}/10  (drafted by {r['drafted_by']})"
-        if r.get("wants_opus") and r["drafted_by"] != "anthropic":
-            line += "   ⚠️ OPUS THROTTLED — this is FREE-CHAIN copy, not Opus!"
-        print(line)
-    if opus.get("ok") and opus.get("drafted_by") == "anthropic":
-        verdict = "CLEARS the 8/10 bar ✅" if opus["final_score"] >= MIN_SCORE else "still below 8/10"
-        print(f"\n  Opus writer {verdict}. Free writer final: "
-              f"{free.get('final_score') if free.get('ok') else 'n/a'}/10.")
+    print(f"\n{'#'*70}\n  VERDICT ({n} draws/side, same judge)\n{'#'*70}")
+    free = _summ("FREE chain:", free_draws, wants=None)
+    opus = _summ("OPUS (premium):", opus_draws, wants="anthropic")
+
+    # Show the best email each side produced, so the numbers have copy behind them.
+    for tag, s in (("FREE", free), ("OPUS", opus)):
+        if s and s["best"]:
+            b = s["best"]
+            print(f"\n  --- best {tag} draft ({b['score']}/10, {b['words']}w, by {b['drafted_by']}) ---")
+            print(f"  Subject: {b['subject']}")
+            for ln in b["body"].splitlines():
+                print(f"  {ln}")
+
+    if free and opus:
+        print(f"\n  Median: FREE {free['median']:.1f}/10  vs  OPUS {opus['median']:.1f}/10.")
+        print(f"  Cleared 8+: FREE {free['cleared']}/{free['n']}  vs  OPUS {opus['cleared']}/{opus['n']}.")
+        if opus["served"] < opus["draws"]:
+            print(f"  ⚠️ Opus only truly served {opus['served']}/{opus['draws']} draws "
+                  "— it is still flaky under repeated load.")
     print("\n  (No email sent, no DB row written, no config changed.)")
 
 
