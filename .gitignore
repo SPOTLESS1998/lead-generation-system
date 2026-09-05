@@ -21,6 +21,8 @@ data/
 /demo-shm
 pending_leads.json
 pending_leads.json.bak
+# Timestamped backups written by deploy/sync_to_box.sh and any pre-edit snapshot.
+pending_leads.json.bak.*
 
 # --- OS noise ---
 .DS_Store
