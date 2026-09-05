@@ -187,9 +187,15 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     # "[Your Name]" placeholder — fine to fix here so both the prompt and the
     # post-generation safety net below use the same real sender identity.
     sender_name = (cfg.get("from_name") or cfg.get("client_name") or "our team").strip()
-    # Blank first name (common for role mailboxes like info@) -> a safe 'there' so the
-    # greeting reads "Hi there," not a literal "Hi Name," — mirrors draft_queued.
-    greet_first = (lead.get("first_name") or "").strip() or "there"
+    # Blank first name is common for role mailboxes (info@, hello@). Say that plainly
+    # instead of passing the literal string "there" as their name: a model handed
+    # `Name: there` argues with itself about it — one draft burned its entire body on
+    # exactly that ("prospect name is 'there'? That seems odd") and queued the argument.
+    # copy_instructions already carries the rule (open with exactly "Hi there," when the
+    # name is unknown), so state the truth and let that rule fire.
+    first = (lead.get("first_name") or "").strip()
+    last = (lead.get("last_name") or "").strip()
+    who = f"{first} {last}".strip() if first else '(unknown — a role mailbox; greet with "Hi there,")'
 
     # Give the copywriter the real facts directly (not just the digested brief) so
     # sentence 1 can cite something true and specific about THIS prospect.
@@ -202,7 +208,7 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     prompt = f"""You are a world-class B2B cold-email copywriter writing ONE email for {cfg['client_name']}.
 
     PROSPECT:
-    Name: {greet_first} {lead.get('last_name','')}
+    Name: {who}
     Company: {lead.get('company_name','')}
 
     {facts_block}
@@ -224,6 +230,85 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     if not body:
         raise RuntimeError("copywriter returned an empty body")
     return subject, body, provider
+
+
+# --------------------------------------------------------------------------
+# The ONE drafting recipe — shared by every entry point
+# --------------------------------------------------------------------------
+# Written once on purpose. There are two ways a cold email gets drafted: the main
+# pipeline (main() below, which discovers leads first) and scripts/draft_queued.py
+# (which re-drafts leads already in the DB). They used to each spell the recipe out
+# themselves, and they drifted: draft_queued never built a magnet and never ran the
+# quality gate, so every draft it produced shipped a dead "[Link to Free Gift]" and
+# was never scored — one even queued the model's raw internal monologue. Any new
+# drafting entry point MUST call these two functions rather than re-spell the steps.
+
+def draft_one_lead(conn, cfg, lead, run_id):
+    """Draft one prospect end to end: fit the offering, plan the angle, build their
+    personalized magnet page, then write + quality-gate the copy.
+
+    Returns (subject, body, provider, magnet_url, magnet_token).
+
+    RAISES on failure, deliberately: a caller that claimed the lead up front wants to
+    roll that claim back, while a caller re-drafting a stored lead wants to leave it
+    queued for retry. Both are correct; neither belongs in here. The whole draft is
+    metered as one ledger step, so tokens/cost/faults are attributed the same way no
+    matter which entry point ran it.
+    """
+    # Premium-first copy when today's real-Claude spend is under the daily cap, else
+    # the free chain (decided in core/budget.copy_cfg). The strategist, the copywriter
+    # and the quality gate all use gen_cfg so their tokens count toward the cap; the
+    # magnet page stays on the free chain (plain cfg) to control spend.
+    gen_cfg = budget.copy_cfg(conn, cfg)
+    with obs.track(conn, cfg, "draft", subject=lead["email"], run_id=run_id):
+        # Pick the best-fitting offering from our CLOSED menu before drafting. The
+        # segment tag is only how they were sourced; re-judging from their real facts
+        # means we pitch the RIGHT service, not just an on-catalog one. Overwrite the
+        # tag so the strategist AND its standard-outcome figure both key off the
+        # fitted choice. Degrades to the tag on failure.
+        fitted = select_offering(gen_cfg, lead)
+        if fitted:
+            lead["ejentic_service"] = fitted
+        brief, _ = generate_strategy(gen_cfg, lead)
+
+        # Build the prospect's real "free gift": a personalized audit page, stored now
+        # so its link resolves the moment the email is approved.
+        magnet_url = magnet_token = None
+        try:
+            content = magnet.build_content(cfg, lead, brief)
+            magnet_token = magnet.new_token()
+            state.save_magnet(conn, cfg["client"], magnet_token, lead["email"], content)
+            magnet_url = magnet.url(cfg, cfg["client"], magnet_token)
+            print_step(f"🎁 [Magnet] Built personalized audit page → {magnet_url}")
+        except Exception as e:
+            print(f"   ⚠️  Magnet generation failed ({e}); drafting without a link.")
+            magnet_url = magnet_token = None
+
+        # Draft → score → rewrite weak copy (LLM-as-judge, see core/quality).
+        subject, body, provider = quality.draft_and_polish(
+            gen_cfg, lead, brief, magnet_url, generate_copy)
+    return subject, body, provider, magnet_url, magnet_token
+
+
+def pending_entry(cfg, lead, subject, body, magnet_url=None, magnet_token=None):
+    """The operator-approval queue entry for one drafted cold email.
+
+    Shared so both drafting entry points produce the IDENTICAL shape — the magnet keys
+    going missing here is what hid the dead-link bug from the dashboard.
+    """
+    return {
+        "kind": "cold",
+        "client": cfg["client"],
+        "company_name": lead.get("company_name") or "",
+        "target_email": lead["email"],
+        "first_name": lead.get("first_name") or "",
+        "last_name": lead.get("last_name") or "",
+        "title": lead.get("title") or "",
+        "drafted_subject": subject,
+        "drafted_body": body,
+        "magnet_url": magnet_url,
+        "magnet_token": magnet_token,
+    }
 
 
 def get_demo_pitch(company_name, base_url=None):
@@ -350,40 +435,11 @@ def main(preview=False, limit=None):
             subject, body = get_demo_pitch(lead["company_name"], cfg.get("unsubscribe_base_url"))
             provider = "demo"
         else:
-            # Premium-first copy when today's real-Claude spend is under the daily cap,
-            # else the free chain (decided in core/budget.copy_cfg). The strategist, the
-            # copywriter, and the quality gate all use gen_cfg so their tokens count
-            # toward the cap; the magnet page stays on the free chain to control spend.
-            gen_cfg = budget.copy_cfg(conn, cfg)
             try:
-                # Track the whole draft as one ledger step: the strategist, copywriter,
-                # and quality-gate LLM calls attribute their tokens/cost here, and a
-                # generation failure is recorded as an 'error' event (then re-raised
-                # into the rollback below — the observer will open a fault for it).
-                with obs.track(conn, cfg, "draft", subject=lead["email"], run_id=run_id):
-                    # Pick the best-fitting offering from our CLOSED menu before drafting.
-                    # The segment tag is only how they were sourced; re-judging from their
-                    # real facts means we pitch the RIGHT service, not just an on-catalog
-                    # one. Overwrite the tag so the strategist AND its standard-outcome
-                    # figure both key off the fitted choice. Degrades to the tag on failure.
-                    fitted = select_offering(gen_cfg, lead)
-                    if fitted:
-                        lead["ejentic_service"] = fitted
-                    brief, _ = generate_strategy(gen_cfg, lead)
-                    # Build the prospect's real "free gift": a personalized audit page,
-                    # stored now so its link resolves the moment the email is approved.
-                    try:
-                        content = magnet.build_content(cfg, lead, brief)
-                        magnet_token = magnet.new_token()
-                        state.save_magnet(conn, cfg["client"], magnet_token, lead["email"], content)
-                        magnet_url = magnet.url(cfg, cfg["client"], magnet_token)
-                        print_step(f"🎁 [Magnet] Built personalized audit page → {magnet_url}")
-                    except Exception as e:
-                        print(f"   ⚠️  Magnet generation failed ({e}); drafting without a link.")
-                        magnet_url = None
-                    # Draft → score → rewrite weak copy (LLM-as-judge, see core/quality).
-                    subject, body, provider = quality.draft_and_polish(
-                        gen_cfg, lead, brief, magnet_url, generate_copy)
+                # One shared recipe (see draft_one_lead): fit → strategy → magnet →
+                # copy → quality gate, metered as a single 'draft' ledger step.
+                subject, body, provider, magnet_url, magnet_token = draft_one_lead(
+                    conn, cfg, lead, run_id)
             except Exception as e:
                 print(f"   ❌ Generation failed for {lead['company_name']}: {e}. "
                       f"Rolling back so this lead retries on the next run.")
@@ -413,19 +469,7 @@ def main(preview=False, limit=None):
             drafted += 1
             continue
 
-        entry = {
-            "kind": "cold",
-            "client": cfg["client"],
-            "company_name": lead["company_name"],
-            "target_email": lead["email"],
-            "first_name": lead["first_name"],
-            "last_name": lead["last_name"],
-            "title": lead["title"],
-            "drafted_subject": subject,
-            "drafted_body": body,
-            "magnet_url": magnet_url,
-            "magnet_token": magnet_token,
-        }
+        entry = pending_entry(cfg, lead, subject, body, magnet_url, magnet_token)
         lead_id = review.save_pending(entry)
         review.notify_operator(cfg, lead_id, entry)
         drafted += 1

@@ -41,6 +41,54 @@ _SIGNOFFS = ("best,", "best regards", "regards,", "cheers,", "thanks,", "thank y
              "sincerely,", "warmly,", "talk soon", "speak soon")
 
 
+# --------------------------------------------------------------------------
+# Structural sanity net — runs on every candidate, gate on or off
+# --------------------------------------------------------------------------
+# The LLM judge below would usually catch a broken draft, but "usually" is not a
+# guarantee and the judge can be offline. A reasoning model once leaked its entire
+# scratchpad — "We need to produce email subject line and body... Word count? Let's
+# count:" — into a draft that reached the approval queue for a real prospect. So a
+# cheap, deterministic check gates every candidate before any of that.
+
+# A body this far past copy_instructions' 90-word ceiling isn't a cold email that
+# ran long; it's a model thinking out loud. Deliberately generous.
+_MAX_BODY_WORDS = 200
+
+# Phrases that belong to a model's scratchpad and never to a cold email.
+_REASONING_TELLS = (
+    "we need to produce", "let's craft", "let us craft", "word count",
+    "let's count", "the instruction:", "the instructions:", "prospect details:",
+    "as an ai", "i need to write", "the user wants", "let me write",
+)
+
+
+def reject_reason(subject, body):
+    """Why this candidate is unusable as an email, or None if it looks like one.
+
+    Structural only — this judges nothing about quality, just that the model
+    returned an email rather than its own notes. Rejecting leaves the lead for a
+    later retry, which is always better than queueing garbage for a real prospect.
+    """
+    text = (body or "").strip()
+    if not text:
+        return "empty body"
+    if not (subject or "").strip():
+        return "empty subject"
+    words = len(text.split())
+    if words > _MAX_BODY_WORDS:
+        return (f"body is {words} words (max {_MAX_BODY_WORDS}) — "
+                f"the model most likely leaked its reasoning")
+    low = text.lower()
+    for tell in _REASONING_TELLS:
+        if tell in low:
+            return f"body contains the reasoning tell {tell!r}"
+    # The drafter strips a leading "Subject:" line, so one surviving mid-body means
+    # the model wrote its whole answer as prose instead of the JSON we asked for.
+    if re.search(r'(?m)^\s*subject\s*:', text, re.IGNORECASE):
+        return "body still contains a 'Subject:' line"
+    return None
+
+
 def finalize_body(body, sender_name, magnet_url=None):
     """Shared safety net for any body (fresh draft OR rewrite): kill placeholder
     signatures, guarantee the promised audit link is present, and guarantee a real
@@ -222,6 +270,22 @@ def draft_and_polish(cfg, lead, brief, magnet_url, draft_fn):
             last_err = e
     if not candidates:
         raise last_err or RuntimeError("no draft produced")
+
+    # Structural sanity net — deliberately BEFORE the `enabled` check, so a model
+    # that returned its scratchpad instead of an email is discarded even when the
+    # quality gate is switched off. If nothing survives we raise: the caller then
+    # leaves the lead for a retry, which beats queueing garbage for a prospect.
+    kept, why_last = [], None
+    for (s, b, prov) in candidates:
+        why = reject_reason(s, b)
+        if why:
+            why_last = why
+            print(f"   🚫 [Quality] discarded an unusable candidate: {why}.")
+        else:
+            kept.append((s, b, prov))
+    if not kept:
+        raise RuntimeError(f"every draft candidate was unusable ({why_last})")
+    candidates = kept
 
     if not enabled:
         return candidates[0]

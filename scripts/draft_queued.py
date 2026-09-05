@@ -11,6 +11,10 @@ The grounding facts (company_facts / company_description) are persisted at
 discovery time, so a re-draft reads the SAME real facts the first pass had; we
 still fall back to the company name for rows saved before facts were stored.
 
+Drafting itself is NOT reimplemented here — it calls lead_agent.draft_one_lead,
+the one shared recipe, so a re-draft is identical to a first-pass draft (fitted
+offering, personalized magnet page, quality gate and all).
+
 Run:  venv/bin/python -u scripts/draft_queued.py
 """
 
@@ -27,18 +31,19 @@ sys.path.insert(0, HERE)                     # scripts/  -> `lead_agent`
 
 from core import config, state, review, suppression
 from core import observability as obs
-# generate_strategy / generate_copy only build prompts; the provider fallback
-# they call lives in core.ai — so drafting here shares the exact copy path.
-from lead_agent import generate_strategy, generate_copy
+# The shared drafting recipe lives in lead_agent so BOTH entry points draft
+# identically (fit → strategy → magnet → copy → quality gate). Never re-spell
+# those steps here; that drift is what shipped dead-link, unscored pitches.
+from lead_agent import draft_one_lead, pending_entry
 
 # Same safety valve as lead_agent: never prepare more than a day's send capacity.
 MAX_PER_RUN = 50
 
 
 def _draft_lead_view(row):
-    """Rebuild the lead dict shape generate_strategy/generate_copy expect from a
-    stored leads row. Coerce NULLs; prefer the persisted grounding facts, falling
-    back to the company name for old rows / blank name on role mailboxes."""
+    """Rebuild the lead dict shape the drafting recipe expects from a stored leads
+    row. Coerce NULLs; prefer the persisted grounding facts, falling back to the
+    company name for old rows / blank name on role mailboxes."""
     first = (row["first_name"] or "").strip()
     company = row["company_name"] or ""
     # Prefer the real scraped facts saved at discovery time; fall back to the
@@ -48,7 +53,13 @@ def _draft_lead_view(row):
     desc = (row["company_description"] or "").strip()
     return {
         "email": row["email"],
-        "first_name": first or "there",       # generic mailbox -> greeting reads 'Hi there,'
+        # Pass the REAL name, blank included. We used to substitute the literal
+        # "there" here to force a "Hi there," greeting, but that reaches the model
+        # as `Name: there` and confuses it — one draft spent its whole body arguing
+        # with itself about it. quality.copy_instructions already says to open with
+        # exactly "Hi there," when no name is given, and finalize_body rewrites a
+        # leaked placeholder greeting, so a blank is handled properly downstream.
+        "first_name": first,
         "last_name": (row["last_name"] or "").strip(),
         "title": (row["title"] or "").strip(),
         "company_name": company,
@@ -107,11 +118,14 @@ def main():
 
         lead = _draft_lead_view(row)
         try:
-            # Meter the re-draft in the ledger just like the first-pass draft in
-            # lead_agent, so retried leads' tokens/cost + any failure are counted.
-            with obs.track(conn, cfg, "draft", subject=row["email"], run_id=run_id):
-                brief, _ = generate_strategy(cfg, lead)
-                subject, body, provider = generate_copy(cfg, lead, brief)
+            # The ONE shared drafting recipe (scripts/lead_agent.draft_one_lead):
+            # fit the offering → strategy → build the personalized magnet page →
+            # draft → quality gate. Re-spelling these steps here is exactly how this
+            # script drifted into shipping dead "[Link to Free Gift]" pitches that
+            # were never scored — so it calls the shared function, same as the main
+            # pipeline. Metering into the ledger happens inside it.
+            subject, body, provider, magnet_url, magnet_token = draft_one_lead(
+                conn, cfg, lead, run_id)
         except Exception as e:
             failed += 1
             print(f"   ❌ Generation failed for {lead['company_name']}: {e}. "
@@ -123,17 +137,7 @@ def main():
         print(f"Subject: {subject}   (drafted by: {provider})")
         print("------------------------")
 
-        entry = {
-            "kind": "cold",
-            "client": client,
-            "company_name": row["company_name"],
-            "target_email": row["email"],
-            "first_name": (row["first_name"] or ""),
-            "last_name": (row["last_name"] or ""),
-            "title": (row["title"] or ""),
-            "drafted_subject": subject,
-            "drafted_body": body,
-        }
+        entry = pending_entry(cfg, lead, subject, body, magnet_url, magnet_token)
         lead_id = review.save_pending(entry)
         review.notify_operator(cfg, lead_id, entry)
         drafted += 1

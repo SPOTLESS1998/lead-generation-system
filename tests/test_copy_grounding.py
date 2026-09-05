@@ -86,13 +86,25 @@ def test_generate_copy_grounds_in_facts():
     check("draft prompt omits the facts block when nothing is known",
           "WHAT WE ACTUALLY KNOW ABOUT THEM" not in cap3["prompt"])
 
-    # Blank first name (role mailbox) -> the prompt greets safely as 'there', never a
-    # literal placeholder the model would echo as "Hi Name,".
+    # Blank first name (role mailbox) -> the prompt SAYS the name is unknown and
+    # points at the safe greeting, rather than passing the literal string "there" as
+    # their name. A model handed `Name: there` argues with itself about it — one real
+    # draft spent its whole body doing exactly that and queued the argument.
     cap4 = _capture_generate_json()
     lead4 = {"first_name": "", "company_name": "Acme"}
     lead_agent.generate_copy(CFG, lead4, "BRIEF")
-    check("blank first name -> prompt uses a safe 'there' greeting name",
-          "Name: there" in cap4["prompt"])
+    check("blank first name -> prompt states the name is unknown",
+          "unknown" in cap4["prompt"] and "role mailbox" in cap4["prompt"])
+    check("blank first name -> prompt never passes 'there' as the name",
+          "Name: there" not in cap4["prompt"])
+    check("blank first name -> prompt still points at the safe greeting",
+          'Hi there,' in cap4["prompt"])
+
+    # A real name is passed through untouched.
+    cap5 = _capture_generate_json()
+    lead_agent.generate_copy(CFG, {"first_name": "Ada", "last_name": "Obi",
+                                   "company_name": "Acme"}, "BRIEF")
+    check("a real first name reaches the prompt as the name", "Name: Ada Obi" in cap5["prompt"])
 
 
 # --------------------------------------------------------------------------
@@ -306,7 +318,10 @@ def test_draft_lead_view_reads_facts():
     v3 = draft_queued._draft_lead_view(_row(company_name="Acme"))
     check("facts fall back to the company name when both are NULL", v3["company_facts"] == "Acme")
     check("description falls back to the company name too", v3["company_description"] == "Acme")
-    check("blank first name becomes a safe 'there' greeting", v3["first_name"] == "there")
+    # A blank name stays blank here on purpose: generate_copy tells the model the name
+    # is unknown and copy_instructions supplies the "Hi there," rule. Substituting the
+    # literal "there" as their NAME is what confused the model into leaking reasoning.
+    check("blank first name is left blank, not faked as 'there'", v3["first_name"] == "")
 
 
 # --------------------------------------------------------------------------

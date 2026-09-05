@@ -152,6 +152,53 @@ check("finalize_body leaves ordinary parenthetical prose alone",
 
 
 # --------------------------------------------------------------------------
+# reject_reason — the deterministic sanity net (no LLM involved)
+# --------------------------------------------------------------------------
+# Regression: a reasoning model returned its own scratchpad as the email body and it
+# was queued for a real prospect ("We need to produce email subject line and body...
+# Word count? Let's count:"). The judge would usually catch that, but it can be
+# offline and the gate can be off, so a structural check runs on every candidate.
+_GOOD = ("Hi Ada,\n\nAcme's solar install work in Maitama stands out. My guess is "
+         "qualifying those enquiries is still manual. We can cut that by 40% in 90 "
+         "days.\n\nWorth a 15-minute look?\n\nBest,\nEjentic AI")
+check("reject_reason passes a normal draft", quality.reject_reason("A quick idea", _GOOD) is None)
+check("reject_reason rejects an empty body", quality.reject_reason("S", "") is not None)
+check("reject_reason rejects an empty subject", quality.reject_reason("", _GOOD) is not None)
+
+# The real leaked-monologue body that shipped, trimmed to its opening.
+_LEAK = ("We need to produce email subject line and body, under 100 words, personalized "
+         "greeting \"Hi there,\" (though prospect name is \"there\"? Actually prospect "
+         "details: Name: there. So first name is \"there\"? That seems odd.")
+check("reject_reason catches the real leaked reasoning", quality.reject_reason("S", _LEAK) is not None)
+check("reject_reason catches a body far over the word ceiling",
+      quality.reject_reason("S", "word " * 400) is not None)
+check("reject_reason catches a 'Subject:' line left in the body",
+      quality.reject_reason("S", "Hi there,\n\nSubject: Another one\n\nBest,\nX") is not None)
+for _tell in ("Let's craft:", "The instruction: keep it short", "As an AI language model"):
+    check(f"reject_reason catches the {_tell!r} tell",
+          quality.reject_reason("S", f"Hi,\n\n{_tell}\n\nBest,\nX") is not None)
+# ...without tripping on ordinary copy that happens to be a bit long or bracketed.
+check("reject_reason allows a legitimately wordy 120-word draft",
+      quality.reject_reason("S", "Hi Ada,\n\n" + "specific grounded sentence. " * 30) is None)
+
+# The net must run even with the gate OFF — that is the state the bad drafts shipped in.
+quality.generate_json = boom
+df = DraftFn([("S", _LEAK, "provA")])
+try:
+    quality.draft_and_polish(qcfg({"enabled": False}), LEAD, "brief", None, df)
+    check("gate off: a garbage-only draft raises instead of shipping", False)
+except RuntimeError:
+    check("gate off: a garbage-only draft raises instead of shipping", True)
+
+# With best_of, a good candidate alongside a garbage one still ships (the good one).
+quality.generate_json = make_gj(scores=[9])
+df = DraftFn([("S1", _LEAK, "provA"), ("S2", _GOOD, "provB")])
+out = quality.draft_and_polish(qcfg({"enabled": True, "min_score": 8, "best_of": 2}),
+                               LEAD, "brief", None, df)
+check("garbage candidate is discarded, the good one ships", out[0] == "S2")
+
+
+# --------------------------------------------------------------------------
 # copy_instructions — the single shared framework (drafter + reviser)
 # --------------------------------------------------------------------------
 with_link = quality.copy_instructions("Ejentic AI", URL)
