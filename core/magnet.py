@@ -137,7 +137,10 @@ def render_html(cfg, content: dict) -> str:
     def esc(v):
         return html.escape(str(v or ""))
 
-    client_name = esc(cfg.get("client_name") or "Ejentic AI")
+    # No house-brand default: this page carries the TENANT's name. Falling back to
+    # our own would put our brand on another client's audit page (MULTITENANCY.md);
+    # config validation already guarantees client_name is set.
+    client_name = esc(cfg.get("client_name") or "")
     company = esc(content.get("company_name") or "your company")
     prepared_for = esc(content.get("prepared_for") or "")
     headline = esc(content.get("headline") or f"AI Opportunity Audit for {company}")

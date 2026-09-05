@@ -4,6 +4,12 @@
   "reply_to": null,
   "physical_address": "Ejentic AI, Kubwa, Federal Capital Territory, Nigeria",
   "unsubscribe_base_url": "https://audit.ejentic.xyz",
+  "offerings": [
+    "AI Lead Generation System",
+    "Localized Multilingual Support Agents",
+    "Air-Gapped Internal Knowledge Base (RAG)",
+    "Enterprise Workflow Automation"
+  ],
   "copy_provider": "gemini",
   "gemini_model": "gemini-2.5-flash",
   "nvidia_model": "mistralai/mistral-nemotron",

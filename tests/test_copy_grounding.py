@@ -188,8 +188,15 @@ def test_generate_strategy_locks_to_real_offerings():
           "Localized Multilingual Support Agents" in offerings and "AI Lead Generation System" in offerings)
     check("offerings also include a service that only has a standard outcome",
           "Enterprise Workflow Automation" in offerings)
-    check("no segments/outcomes -> falls back to the house offerings",
-          "Enterprise Workflow Automation" in lead_agent._client_offerings({"client_name": "X"}))
+    # An explicit `offerings` list wins, and is the recommended way to say it.
+    check("an explicit offerings list is the menu",
+          lead_agent._client_offerings({**CFG, "offerings": ["Bookkeeping Automation"]})
+          == ["Bookkeeping Automation"])
+    # NO house fallback: a client that declares nothing gets an EMPTY menu, never our
+    # services. Inheriting a default here would pitch our catalogue in their name —
+    # config validation turns this into a loud ConfigError (see test_multitenancy.py).
+    check("a client with no offerings gets an EMPTY menu, not the house list",
+          lead_agent._client_offerings({"client_name": "X"}) == [])
 
     cap = {}
 

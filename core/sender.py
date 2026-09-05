@@ -149,7 +149,9 @@ class SendingPool:
             msg["Reply-To"] = self.reply_to
         if redirected_to:
             # Make it obvious in the demo that this was routed to a safe inbox.
-            msg["X-Ejentic-Intended-For"] = to_email
+            # Neutral header name: this rides on every tenant's mail, so it must not
+            # carry our brand (MULTITENANCY.md). Diagnostic only, read by nothing.
+            msg["X-Outreach-Intended-For"] = to_email
 
         # Stamp a Message-ID (so replies can be matched back) and thread if asked.
         domain = mailbox["address"].split("@")[-1] if "@" in mailbox["address"] else None

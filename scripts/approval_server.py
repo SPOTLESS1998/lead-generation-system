@@ -30,6 +30,19 @@ def get_cfg(client_name):
     return _CFG_CACHE[client_name]
 
 
+def _brand():
+    """The ACTIVE tenant's display name, for pages that aren't tied to one lead.
+
+    Never hardcode a brand into a served page — this server runs for whichever
+    client is deployed (MULTITENANCY.md). Degrades to a neutral label rather than
+    borrowing our own name if the tenant's config can't be read.
+    """
+    try:
+        return (get_cfg(config.active_client()).get("client_name") or "").strip() or "our team"
+    except Exception:
+        return "our team"
+
+
 def open_conn(cfg):
     # Fresh connection per request → thread-safe under Flask's threaded dev server.
     return state.connect(cfg["paths"]["db"])
@@ -726,7 +739,7 @@ def blueprint():
           <strong>Step 2: Processing</strong> - Llama 3.1 analyzes the scanned text, identifying vendor names, amounts, and tax categories.<br>
           <strong>Step 3: Reconciliation</strong> - The AI API automatically cross-references these amounts with the bank ledger and highlights only the discrepancies for human review.</p>
           <div style="margin-top: 40px; padding: 20px; background: #e8f4f8; border-radius: 8px;">
-            <strong>Ready to build this?</strong> Reply to the email to schedule a free technical deployment consultation with Ejentic AI.
+            <strong>Ready to build this?</strong> Reply to the email to schedule a free technical deployment consultation with """ + html.escape(_brand()) + """.
           </div>
         </div>
       </body>
@@ -759,7 +772,7 @@ def chatbot():
             </div>
           </div>
           <div style="padding: 20px; background: #222; text-align: center; color: #888; font-size: 14px;">
-            <em>Your temporary access expires in 7 days. Reply to Ejentic AI's email to unlock full deployment.</em>
+            <em>Your temporary access expires in 7 days. Reply to """ + html.escape(_brand()) + """'s email to unlock full deployment.</em>
           </div>
         </div>
       </body>
@@ -816,7 +829,7 @@ def _resolve_port():
 if __name__ == '__main__':
     _port = _resolve_port()
     print("=========================================================")
-    print("🚀 Ejentic AI - Web Approval Server")
+    print(f"🚀 {_brand()} - Web Approval Server  (tenant: {config.active_client()})")
     print(f"Listening for button clicks on http://localhost:{_port} ...")
     print("=========================================================")
     app.run(port=_port, debug=False)

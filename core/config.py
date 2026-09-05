@@ -130,9 +130,18 @@ DEFAULTS = {
 }
 
 
+DEFAULT_CLIENT = "ejentic"
+
+
 def active_client():
-    """The client to operate on: the CLIENT env var, or 'ejentic' by default."""
-    return os.environ.get("CLIENT", "ejentic")
+    """The client (tenant) to operate on: the CLIENT env var, else DEFAULT_CLIENT.
+
+    The default is a convenience for this install, NOT an assumption in the code —
+    every tenant-owned value comes from clients/<name>/config.json. load_client()
+    announces which tenant is active so a wrong-CLIENT run is obvious immediately
+    rather than after it has drafted or mailed on the wrong client's behalf.
+    """
+    return os.environ.get("CLIENT", DEFAULT_CLIENT)
 
 
 def _env(key):
@@ -201,7 +210,27 @@ def load_client(name=None):
     ]
     cfg["sending"]["controlled_inbox"] = _resolve_controlled_inbox(cfg)
     _validate(cfg)
+    _announce_tenant(cfg)
     return cfg
+
+
+# Announce each tenant once per process: repeated load_client() calls (the Flask
+# approval server loads per request) must not spam the log.
+_announced = set()
+
+
+def _announce_tenant(cfg):
+    """Say which tenant is active, so operating the wrong client is immediately
+    visible. Silent when ANNOUNCE_TENANT=0, and never more than once per client."""
+    if os.environ.get("ANNOUNCE_TENANT") == "0":
+        return
+    client = cfg["client"]
+    if client in _announced:
+        return
+    _announced.add(client)
+    import sys
+    print(f"🏢 tenant: {client} ({cfg.get('client_name')})  mode={cfg['sending']['mode']}",
+          file=sys.stderr)
 
 
 def _resolve_controlled_inbox(cfg):
@@ -213,6 +242,32 @@ def _resolve_controlled_inbox(cfg):
     return mailboxes[0]["address"] if mailboxes else None
 
 
+def tenant_offerings(cfg):
+    """The closed menu of what this client sells, read ONLY from their own config.
+
+    Precedence: `offerings` → discovery/yellowpages segment services →
+    `service_outcomes` keys. Lives here (not just in the drafter) so config load can
+    refuse an incomplete tenant before any LLM call or email. Mirrors
+    scripts/lead_agent._client_offerings — see MULTITENANCY.md.
+    """
+    seen, out = set(), []
+
+    def _add(s):
+        s = (s or "").strip() if isinstance(s, str) else ""
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+
+    for svc in (cfg.get("offerings") or []):
+        _add(svc if isinstance(svc, str) else (svc or {}).get("name"))
+    for src in ("discovery", "yellowpages"):
+        for seg in ((cfg.get(src) or {}).get("segments") or []):
+            _add(seg.get("service"))
+    for svc in (cfg.get("service_outcomes") or {}):
+        _add(svc)
+    return out
+
+
 def _validate(cfg):
     client = cfg["client"]
     if not cfg["sending"]["mailboxes"]:
@@ -221,6 +276,25 @@ def _validate(cfg):
         raise ConfigError(f"[{client}] copy_provider must be 'gemini' or 'nvidia'")
     if cfg["sending"]["mode"] not in ("controlled", "live"):
         raise ConfigError(f"[{client}] sending.mode must be 'controlled' or 'live'")
+
+    # A tenant MUST declare what it sells. There is no house menu to fall back on —
+    # inheriting one would pitch our services in this client's name (see
+    # MULTITENANCY.md). Fail here, at load, rather than silently at draft time.
+    if not tenant_offerings(cfg):
+        raise ConfigError(
+            f"[{client}] no offerings configured — this client has no services to pitch. "
+            f"Add an 'offerings' list (and ideally 'service_outcomes') to "
+            f"clients/{client}/config.json. There is deliberately no default menu: see "
+            f"MULTITENANCY.md."
+        )
+
+    # A tenant's own name is what brands their emails and audit pages.
+    name = (cfg.get("client_name") or "").strip()
+    if not name or "REPLACE-ME" in name.upper():
+        raise ConfigError(
+            f"[{client}] client_name is not set — it brands every email footer and "
+            f"audit page. Edit clients/{client}/config.json."
+        )
 
     # CAN-SPAM needs a real postal address; warn loudly but don't block the demo.
     addr = (cfg.get("physical_address") or "").strip()

@@ -2,11 +2,31 @@
   "client_name": "REPLACE-ME Company Name",
   "from_name": "REPLACE-ME Sender Name",
   "reply_to": null,
+  "website_url": "",
   "physical_address": "REPLACE-ME: Street, City, Country (required by CAN-SPAM before real sends)",
   "unsubscribe_base_url": "http://localhost:5001",
+
+  "offerings": [
+    "REPLACE-ME Service One",
+    "REPLACE-ME Service Two"
+  ],
+  "service_outcomes": {
+    "REPLACE-ME Service One": "REPLACE-ME the concrete result, with a real figure and timeframe (e.g. 'cut response time 50% within 60 days')",
+    "REPLACE-ME Service Two": "REPLACE-ME the concrete result, with a real figure and timeframe"
+  },
+
+  "lead_source": "csv",
+  "discovery": {
+    "max_leads": 10,
+    "max_results": 12,
+    "location": "REPLACE-ME City, Country",
+    "segments": []
+  },
+
   "copy_provider": "gemini",
   "gemini_model": "gemini-2.5-flash",
   "nvidia_model": "mistralai/mistral-nemotron",
+  "freellmapi_model": null,
   "copy": {
     "premium": false,
     "anthropic_model": "claude-opus-4-8",

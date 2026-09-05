@@ -25,23 +25,21 @@ def print_step(step):
 # reply agent). These two functions just build the prompts.
 # --------------------------------------------------------------------------
 
-# The four house offerings, used only as a fallback for a client that runs on a
-# curated CSV with no segments/outcomes configured. Real clients derive their menu
-# from config (below), so this list never has to be edited per client.
-_DEFAULT_OFFERINGS = [
-    "Localized Multilingual Support Agents",
-    "AI Lead Generation System",
-    "Air-Gapped Internal Knowledge Base (RAG)",
-    "Enterprise Workflow Automation",
-]
-
-
 def _client_offerings(cfg):
-    """The CLOSED menu of what this client actually sells — the only services the
-    strategist may pitch. Derived from the client's OWN config (the services its
-    discovery/yellowpages segments target, plus any with a house-standard outcome),
-    so it stays correct per client without hardcoding. Falls back to the four house
-    offerings only when a client configures none (e.g. a plain CSV client)."""
+    """The CLOSED menu of what THIS client sells — the only services the strategist
+    may pitch. Read entirely from the client's own config, in precedence order:
+
+        1. `offerings`          — the explicit menu (recommended; say it plainly)
+        2. discovery/yellowpages segment `service` values
+        3. `service_outcomes` keys
+
+    There is deliberately NO house fallback. A default menu here would put OUR
+    services into ANOTHER company's cold emails: this function used to fall back to
+    Ejentic's four offerings, so a client onboarded from the template would have
+    pitched Ejentic's catalogue to their own prospects. A client with no offerings is
+    a configuration error (core.config._validate raises), never a silent borrow.
+    See MULTITENANCY.md.
+    """
     seen, out = set(), []
 
     def _add(s):
@@ -50,12 +48,14 @@ def _client_offerings(cfg):
             seen.add(s)
             out.append(s)
 
+    for svc in (cfg.get("offerings") or []):
+        _add(svc if isinstance(svc, str) else (svc or {}).get("name"))
     for src in ("discovery", "yellowpages"):
         for seg in ((cfg.get(src) or {}).get("segments") or []):
             _add(seg.get("service"))
     for svc in (cfg.get("service_outcomes") or {}):
         _add(svc)
-    return out or list(_DEFAULT_OFFERINGS)
+    return out
 
 
 def _canon_offering(value, offerings):

@@ -4,6 +4,12 @@
   "reply_to": null,
   "physical_address": "Ejentic AI, 12 Admiralty Way, Lekki Phase 1, Lagos",
   "unsubscribe_base_url": "http://localhost:5002",
+  "offerings": [
+    "Localized Multilingual Support Agents",
+    "AI Lead Generation System",
+    "Air-Gapped Internal Knowledge Base (RAG)",
+    "Enterprise Workflow Automation"
+  ],
   "copy_provider": "gemini",
   "providers": ["freellmapi", "gemini", "nvidia"],
   "freellmapi_model": ["mistral-large-latest", "mistral-medium-latest", "meta-llama/llama-4-scout-17b-16e-instruct", "command-a-03-2025", "glm-4.7-flash", "deepseek-v3.2"],
