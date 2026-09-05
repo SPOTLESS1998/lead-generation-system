@@ -122,6 +122,34 @@ check("finalize_body leaves a real first-name greeting alone",
 check("finalize_body leaves an existing 'Hi there,' greeting alone",
       quality.finalize_body("Hi there,\n\nPitch.\n\nBest,\nX", "X", None).startswith("Hi there,"))
 
+# Link-placeholder safety net. Regression: every queued draft shipped a literal
+# "[Link to Free Gift]" — the magnet build had failed, so the drafter was told
+# "do NOT invent or include any link" and wrote a placeholder anyway. A dangling
+# bracket in a prospect's inbox advertises that the mail was machine-written, so
+# it is repaired here whether or not a magnet exists.
+_ph = "Hi Ada,\n\nPitch.\n\n[Link to Free Gift]\n\nBest,\nX"
+check("finalize_body turns a link placeholder INTO the real magnet link",
+      quality.finalize_body(_ph, "X", URL).count(URL) == 1
+      and "[Link to Free Gift]" not in quality.finalize_body(_ph, "X", URL))
+check("finalize_body deletes a link placeholder when there is no magnet",
+      "[Link to Free Gift]" not in quality.finalize_body(_ph, "X", None)
+      and "http" not in quality.finalize_body(_ph, "X", None))
+check("finalize_body leaves no blank hole where the placeholder was",
+      "\n\n\n" not in quality.finalize_body(_ph, "X", None))
+for _v in ("[Insert Link Here]", "(link to your free audit)",
+           "[your personalized audit page]", "[DOWNLOAD LINK]"):
+    check(f"finalize_body strips the {_v!r} variant",
+          "[" not in quality.finalize_body(f"Hi,\n\nGrab it: {_v}\n\nBest,\nX", "X", None))
+# ...without touching legitimate text that merely uses brackets or parentheses.
+check("finalize_body keeps a real URL that is already in the body",
+      URL in quality.finalize_body(f"Hi,\n\n{URL}\n\nBest,\nX", "X", None))
+check("finalize_body leaves a markdown link intact",
+      "[the audit](https://x.co/a)" in
+      quality.finalize_body("Hi,\n\nSee [the audit](https://x.co/a)\n\nBest,\nX", "X", None))
+check("finalize_body leaves ordinary parenthetical prose alone",
+      "(mostly in Lagos)" in
+      quality.finalize_body("Hi,\n\nWe serve SMEs (mostly in Lagos).\n\nBest,\nX", "X", None))
+
 
 # --------------------------------------------------------------------------
 # copy_instructions — the single shared framework (drafter + reviser)

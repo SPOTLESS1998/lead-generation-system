@@ -24,6 +24,18 @@ from core.ai import generate_json
 _PLACEHOLDERS = ("[Your Name]", "[Your name]", "[YOUR NAME]", "[Name]", "[name]",
                  "[Your Company]", "[Company]", "[your name]")
 
+# A bracketed stand-in for the audit link — "[Link to Free Gift]", "(insert link here)",
+# "[your audit page]". Models write these even when told not to: when no magnet was built
+# the drafter is instructed "do NOT invent or include any link", and it produces one anyway.
+# A dangling placeholder in a real prospect's inbox is worse than no link at all — it
+# advertises that the mail was machine-written — so finalize_body repairs it unconditionally.
+# The lookahead leaves a markdown link "[label](https://…)" alone.
+_LINK_PLACEHOLDER = re.compile(
+    r'[\[\(\{]\s*[^\]\)\}\n]*?'
+    r'(?:link|url|gift|audit page|landing page|attachment|download|insert)'
+    r'[^\]\)\}\n]*?\s*[\]\)\}](?!\s*\()',
+    re.IGNORECASE)
+
 # Closing words that count as a real sign-off; if none is present we add one.
 _SIGNOFFS = ("best,", "best regards", "regards,", "cheers,", "thanks,", "thank you,",
              "sincerely,", "warmly,", "talk soon", "speak soon")
@@ -45,6 +57,16 @@ def finalize_body(body, sender_name, magnet_url=None):
             'Hi there,', body, count=1, flags=re.IGNORECASE)
     for ph in _PLACEHOLDERS:
         body = body.replace(ph, sender_name)
+    # Link-placeholder safety net. With a real magnet, the placeholder BECOMES the
+    # link (the model already put it in the right sentence). Without one, the promise
+    # is deleted rather than left dangling — then any line left blank by the deletion
+    # is collapsed so the mail doesn't ship with a hole in it.
+    if magnet_url:
+        body = _LINK_PLACEHOLDER.sub(magnet_url, body)
+    else:
+        body = _LINK_PLACEHOLDER.sub("", body)
+    body = re.sub(r'[ \t]+(\n|$)', r'\1', body)      # trailing spaces the cut left behind
+    body = re.sub(r'\n{3,}', '\n\n', body).strip()   # and any blank line it opened up
     if magnet_url and magnet_url not in body:
         body = f"{body}\n\n{magnet_url}"
     # Append a sign-off only when the body has neither a closing word nor the
