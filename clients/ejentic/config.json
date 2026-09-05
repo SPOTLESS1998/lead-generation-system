@@ -2,7 +2,7 @@
   "client_name": "Ejentic AI",
   "from_name": "Ejeh Peter",
   "reply_to": null,
-  "physical_address": "REPLACE-ME: your business postal address (required by CAN-SPAM before real sends)",
+  "physical_address": "Ejentic AI, Kubwa, Federal Capital Territory, Nigeria",
   "unsubscribe_base_url": "https://audit.ejentic.xyz",
   "copy_provider": "gemini",
   "gemini_model": "gemini-2.5-flash",
@@ -16,7 +16,7 @@
   ],
   "copy": {
     "premium": false,
-    "anthropic_model": "claude-opus-4-8",
+    "anthropic_model": "claude-opus-5",
     "premium_daily_usd_cap": null
   },
   "demo_mode": false,

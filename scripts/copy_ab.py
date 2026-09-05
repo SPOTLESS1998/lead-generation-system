@@ -121,7 +121,12 @@ def _run_side(label, writer_cfg, judge_cfg, n, gentle=False):
         if d:
             draws.append(d)
         if gentle and i < n:
-            time.sleep(3)        # let a throttling proxy breathe between Opus calls
+            # Let a budget-pooled proxy refill between Opus draws. AgentRouter answers
+            # a single draft fine but returns HTTP 402 "Budget pool quota has been
+            # exhausted" when a run bursts ~15 premium calls back to back — so the
+            # gap has to be long enough for its window to roll, not just polite.
+            # Override with PACE_SECONDS when measuring against a different proxy.
+            time.sleep(float(os.environ.get("PACE_SECONDS") or 3))
     return draws
 
 
