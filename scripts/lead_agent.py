@@ -311,18 +311,23 @@ def pending_entry(cfg, lead, subject, body, magnet_url=None, magnet_token=None):
     }
 
 
-def get_demo_pitch(company_name, base_url=None):
+def get_demo_pitch(company_name, base_url=None, sign_off=None):
     """Canned pitches for demo_mode (video recording only) — no API calls.
 
     Links are built from the client's base URL so they always point at the running
-    approval server (never a stale hardcoded port)."""
+    approval server (never a stale hardcoded port). The SIGN-OFF comes from the
+    caller's config: a brand string baked in here would sign another tenant's demo
+    mail with our name (MULTITENANCY.md). The bodies are fixtures matched to
+    clients/demo/leads.csv — swap them per client if you record a client's own demo.
+    """
     base = (base_url or "http://localhost:5001").rstrip("/")
+    tail = f"\n\nBest,\n{(sign_off or '').strip()}".rstrip()
     if "Adebayo" in company_name:
-        return ("Automating Tax Audits for Adebayo & Co", "Hi Oluwatobi,\n\nI noticed Adebayo & Co handles a massive volume of tax audits and payroll processing for mid-sized enterprises. Manually verifying those ledgers takes your team hours every week.\n\nI mapped out a step-by-step architectural blueprint showing exactly how your firm can automate ledger ingestion and payroll reconciliation using OCR and secure AI models. I've attached the blueprint below for your review.\n\n" + f"{base}/magnet/blueprint" + "\n\nBest,\nEjentic AI Team")
+        return ("Automating Tax Audits for Adebayo & Co", "Hi Oluwatobi,\n\nI noticed Adebayo & Co handles a massive volume of tax audits and payroll processing for mid-sized enterprises. Manually verifying those ledgers takes your team hours every week.\n\nI mapped out a step-by-step architectural blueprint showing exactly how your firm can automate ledger ingestion and payroll reconciliation using OCR and secure AI models. I've attached the blueprint below for your review.\n\n" + f"{base}/magnet/blueprint" + tail)
     elif "Capital Homes" in company_name:
-        return ("Automating Client Inquiries for Capital Homes", "Hi Amina,\n\nI love the luxury properties you are brokering at Capital Homes Abuja. Since you manage thousands of client inquiries monthly, your team likely spends hours answering repetitive questions about property viewings, especially late at night.\n\nI built a custom AI chatbot prototype specifically trained on your Maitama listings. I've generated a 7-day temporary access pass for you to test the software live.\n\nHere is the secure link to test the prototype:\n\n" + f"{base}/magnet/chatbot" + "\n\nBest,\nEjentic AI Team")
+        return ("Automating Client Inquiries for Capital Homes", "Hi Amina,\n\nI love the luxury properties you are brokering at Capital Homes Abuja. Since you manage thousands of client inquiries monthly, your team likely spends hours answering repetitive questions about property viewings, especially late at night.\n\nI built a custom AI chatbot prototype specifically trained on your Maitama listings. I've generated a 7-day temporary access pass for you to test the software live.\n\nHere is the secure link to test the prototype:\n\n" + f"{base}/magnet/chatbot" + tail)
     else:
-        return ("Strategic Audit for Lagos Style Hub", "Hi Chinedu,\n\nI've been following Lagos Style Hub's growth. Managing thousands of daily fashion orders across Nigeria must create a massive bottleneck for your customer support team, leading to missed sales in your DMs.\n\nI did a brief strategic audit of your current workflow and mapped out the exact step-by-step process of how you can build an Autonomous AI Lead Generation & Support System to instantly capture lost WhatsApp sales. \n\nI've linked the strategic breakdown below.\n\n" + f"{base}/magnet/strategic-audit" + "\n\nBest,\nEjentic AI Team")
+        return ("Strategic Audit for Lagos Style Hub", "Hi Chinedu,\n\nI've been following Lagos Style Hub's growth. Managing thousands of daily fashion orders across Nigeria must create a massive bottleneck for your customer support team, leading to missed sales in your DMs.\n\nI did a brief strategic audit of your current workflow and mapped out the exact step-by-step process of how you can build an autonomous AI lead-generation and support system to instantly capture lost WhatsApp sales. \n\nI've linked the strategic breakdown below.\n\n" + f"{base}/magnet/strategic-audit" + tail)
 
 
 # --------------------------------------------------------------------------
@@ -432,7 +437,9 @@ def main(preview=False, limit=None):
         if cfg["demo_mode"]:
             print_step(f"🧠 [demo] Strategist analyzing {lead['company_name']}...")
             time.sleep(1.0)
-            subject, body = get_demo_pitch(lead["company_name"], cfg.get("unsubscribe_base_url"))
+            subject, body = get_demo_pitch(
+                lead["company_name"], cfg.get("unsubscribe_base_url"),
+                sign_off=cfg.get("from_name") or cfg.get("client_name"))
             provider = "demo"
         else:
             try:

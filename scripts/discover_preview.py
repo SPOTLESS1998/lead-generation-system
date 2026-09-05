@@ -42,7 +42,11 @@ def main():
     source = os.environ.get("PREVIEW_SOURCE") or cfg.get("lead_source") or "maps_firecrawl"
     query = os.environ.get("PREVIEW_QUERY", "").strip()
     location = os.environ.get("PREVIEW_LOCATION", "").strip()
-    service = os.environ.get("PREVIEW_SERVICE", "AI Lead Generation System").strip()
+    # Default to the active tenant's FIRST offering, never a hardcoded service name
+    # (MULTITENANCY.md) — a house default here would tag another client's preview
+    # leads with a service they don't sell.
+    _own = config.tenant_offerings(cfg)
+    service = (os.environ.get("PREVIEW_SERVICE") or (_own[0] if _own else "")).strip()
     max_leads = int(os.environ.get("PREVIEW_MAX", "5"))
 
     # A single-query override keeps the on-camera clip short and predictable.

@@ -147,18 +147,47 @@ try:
     print("\n[no tenant-owned business fact is hardcoded in code]")
     check("_DEFAULT_OFFERINGS no longer exists",
           not hasattr(lead_agent, "_DEFAULT_OFFERINGS"))
-    for mod, path in (("scripts/lead_agent.py", os.path.join(ROOT, "scripts", "lead_agent.py")),
-                      ("core/magnet.py", os.path.join(ROOT, "core", "magnet.py")),
-                      ("core/sender.py", os.path.join(ROOT, "core", "sender.py"))):
+
+    def _code_only(path):
+        """Source with comments stripped: the rule is about VALUES the code EMITS,
+        so a comment naming the regression it prevents is fine."""
         with open(path) as f:
-            src = f.read()
-        # Ignore comments/docstrings: the rule is about VALUES the code would emit.
-        code = "\n".join(l for l in src.splitlines()
-                         if not l.lstrip().startswith("#"))
-        offenders = [h for h in HOUSE_SERVICES if h in code]
+            return "\n".join(l for l in f.read().splitlines()
+                             if not l.lstrip().startswith("#"))
+
+    # Every module that can put words in front of a prospect — an email, a served
+    # page, a tagged lead. A house SERVICE name in any of them is the original bug.
+    for mod in ("scripts/lead_agent.py", "scripts/draft_queued.py", "scripts/discover_preview.py",
+                "scripts/copy_ab.py", "core/magnet.py", "core/sender.py", "core/review.py",
+                "core/quality.py", "core/compliance.py"):
+        p = os.path.join(ROOT, mod)
+        if not os.path.exists(p):
+            continue
+        offenders = [h for h in HOUSE_SERVICES if h in _code_only(p)]
         check(f"{mod} hardcodes no house SERVICE name", not offenders)
-    with open(os.path.join(ROOT, "core", "sender.py")) as f:
-        check("outbound headers carry no house brand", "X-Ejentic" not in f.read())
+
+    # A BRAND string is just as leaky as a service name: `get_demo_pitch` used to sign
+    # every demo pitch "Best,\nEjentic AI Team", so a client recording their own demo
+    # would have shown OUR name. The sign-off now comes from cfg["from_name"].
+    for mod in ("scripts/lead_agent.py", "scripts/draft_queued.py", "core/magnet.py",
+                "core/sender.py", "core/review.py", "core/compliance.py"):
+        p = os.path.join(ROOT, mod)
+        if not os.path.exists(p):
+            continue
+        code = _code_only(p)
+        # "Ejentic" may appear in an identifier (ejentic_service) or a docstring, but
+        # never inside a string literal the code would EMIT. Quoted is the tell.
+        emitted = ('"Ejentic' in code or "'Ejentic" in code
+                   or "Ejentic AI Team" in code or "Ejentic AI\\n" in code)
+        check(f"{mod} emits no house BRAND string", not emitted)
+
+    check("outbound headers carry no house brand",
+          "X-Ejentic" not in _code_only(os.path.join(ROOT, "core", "sender.py")))
+
+    # The demo pitch signs off with the TENANT's name, whoever runs it.
+    _s, _b = lead_agent.get_demo_pitch("Adebayo & Co", "http://x", sign_off="Ada Obi")
+    check("demo pitch signs off with the tenant's own name",
+          _b.strip().endswith("Ada Obi") and "Ejentic" not in _b)
 
     # ----------------------------------------------------------------------
     # The template itself is a complete starting point

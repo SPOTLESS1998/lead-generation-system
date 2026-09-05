@@ -5,6 +5,11 @@ folder — so standing up **Client #2** is: copy `_template/` to `clients/<name>
 fill in the two files, add that client's credentials to `.env`, then run with
 `CLIENT=<name>`.
 
+**No code changes needed, ever.** That is a rule, not a convenience — see
+[`MULTITENANCY.md`](../MULTITENANCY.md). No business fact about a client (a service
+name, an outcome figure, a brand string, a postal address) may live in Python. If you
+find yourself editing code to take on a client, that's a bug in the architecture.
+
 ```
 clients/
   _template/     # copy this to start a new client
@@ -18,6 +23,42 @@ clients/
 Runtime state (who's been contacted, suppression list) is kept **out** of here,
 in `data/<name>/state.sqlite` (git-ignored, machine-local).
 
+## Onboarding a new client
+
+One command copies the template and validates the result, so you find out
+immediately whether the client is complete rather than mid-run:
+
+```bash
+venv/bin/python scripts/new_client.py acme \
+    --name "Acme Ltd" --sender "Ada Obi" \
+    --offerings "Bookkeeping Automation,Invoice Chasing" \
+    --address "Acme Ltd, 4 Broad St, Lagos, Nigeria"
+
+venv/bin/python scripts/new_client.py acme --check   # re-validate any time
+```
+
+Then, in order:
+
+1. **Finish `clients/acme/config.json`** — the five things that are genuinely
+   theirs: `offerings` (what they sell), `service_outcomes` (the real result +
+   figure + timeframe for each — left as `REPLACE-ME` on purpose, because an
+   invented figure would ship in real mail), `physical_address` (CAN-SPAM),
+   `unsubscribe_base_url`, and `sending.mailboxes[]`.
+2. **Add their SMTP credentials to `.env`.** Config only ever names env vars, so
+   nothing secret is written into `clients/`.
+3. **Fill `clients/acme/leads.csv`** (or set `lead_source` to `maps_firecrawl` /
+   `yellowpages` and configure `discovery`).
+4. **Dry run — sends nothing:**
+   `CLIENT=acme venv/bin/python scripts/lead_agent.py --preview`
+
+Every run prints the active tenant on startup (`🏢 tenant: acme (Acme Ltd) mode=controlled`)
+so operating the wrong client is obvious immediately. Silence it with `ANNOUNCE_TENANT=0`.
+
+**A client that isn't ready fails at config load, not at draft time.** Missing
+`offerings` or an unfilled `client_name` raises `ConfigError` before a single LLM
+call or email. There is deliberately **no default service menu** — inheriting one
+would pitch someone else's services in this client's name.
+
 ## config.json
 
 | field | meaning |
@@ -26,9 +67,15 @@ in `data/<name>/state.sqlite` (git-ignored, machine-local).
 | `from_name` | Display name on the From line. |
 | `reply_to` | Optional Reply-To address (`null` to omit). |
 | `physical_address` | **Required by CAN-SPAM** — a real postal address, printed in every footer. |
+| `website_url` | The client's own site. Informational; also used when introducing them. |
 | `unsubscribe_base_url` | Base URL for unsubscribe + audit-link + one-click reply buttons. Its **port is also where the approval server binds** (`http://localhost:5002` for the demo), so links and server can't drift apart. |
+| `offerings` | **Required.** The closed list of services this client sells — the *only* things the strategist may pitch. No default exists; an empty list is a `ConfigError` at load. |
+| `service_outcomes` | `{service: "the concrete result, with a figure and timeframe"}`. The strategist quotes this **verbatim** instead of inventing a number, which is what kept the promise consistent between runs. Keys also count as `offerings` if you omit that list. |
+| `lead_source` | Where leads come from: `"csv"` (reads `leads.csv`), `"maps_firecrawl"`, or `"yellowpages"`. |
+| `discovery` | Settings for `maps_firecrawl`: `max_leads`, `max_results`, `location`, and `segments[]` — each `{name, service, queries[]}`, tagging every prospect it finds with the offering it matched. |
 | `copy_provider` | `"gemini"` (mandated) or `"nvidia"` (fallback). |
 | `gemini_model` / `nvidia_model` | Model IDs for each provider. |
+| `freellmapi_model` | Model (or ordered list of models) for the FreeLLMAPI gateway. `null` = let the gateway auto-route. |
 | `providers` | Optional explicit fallback chain, e.g. `["freellmapi","gemini","nvidia"]`. Omit to use the default chain. `anthropic` is added/removed automatically by the budget guard — don't list it here. |
 | `copy.premium` | `true` = route cold-email copy to **real Claude** (the Anthropic Messages API) when today's spend is under the cap. `false` = free providers only. |
 | `copy.anthropic_model` | Which Claude to use for premium copy (e.g. `claude-opus-4-8`). |

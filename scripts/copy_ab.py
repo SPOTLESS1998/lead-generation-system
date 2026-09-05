@@ -44,16 +44,23 @@ LEAD = {
     ),
 }
 
-BRIEF = (
-    "OBSERVATION: Lekki Prime Realty has built real trust — 180+ Google reviews at 4.6 stars "
-    "and a 28k-strong Instagram following for their Lekki Phase 1 luxury listings.\n"
-    "PAIN: All that inbound interest funnels into a single WhatsApp line and a web form, so "
-    "enquiries likely pile up unqualified and slow-to-answer at the weekend viewing rush.\n"
-    'SERVICE: MUST be exactly "AI Lead Generation System".\n'
-    "OUTCOME: 10-20 additional qualified leads per month within the first 90 days.\n"
-    "AUDIT: show how many enquiries go unanswered >1 hour and what a qualified-lead pipeline "
-    "would capture."
-)
+def _brief(cfg):
+    """The fixed strategy brief both writers get, with SERVICE/OUTCOME taken from the
+    bench tenant's own config — never a hardcoded service name (MULTITENANCY.md)."""
+    own = config.tenant_offerings(cfg)
+    service = own[0] if own else ""
+    outcome = ((cfg.get("service_outcomes") or {}).get(service)
+               or "a concrete, plausible result within the first 90 days")
+    return (
+        "OBSERVATION: Lekki Prime Realty has built real trust — 180+ Google reviews at 4.6 stars "
+        "and a 28k-strong Instagram following for their Lekki Phase 1 luxury listings.\n"
+        "PAIN: All that inbound interest funnels into a single WhatsApp line and a web form, so "
+        "enquiries likely pile up unqualified and slow-to-answer at the weekend viewing rush.\n"
+        f'SERVICE: MUST be exactly "{service}".\n'
+        f"OUTCOME: {outcome}.\n"
+        "AUDIT: show how many enquiries go unanswered >1 hour and what a qualified-lead pipeline "
+        "would capture."
+    )
 
 
 def _wc(body):
@@ -88,11 +95,11 @@ Reply with ONLY this JSON, no prose: {{"subject": "<subject>", "body": "<full bo
         return subject, body
 
 
-def _one_draw(i, writer_cfg, judge_cfg, sender):
+def _one_draw(i, writer_cfg, judge_cfg, sender, brief):
     """One draft -> length-guard if needed -> score with the CONSTANT judge."""
     t0 = time.time()
     try:
-        subject, body, drafted_by = generate_copy(writer_cfg, LEAD, BRIEF, MAGNET_URL)
+        subject, body, drafted_by = generate_copy(writer_cfg, LEAD, brief, MAGNET_URL)
     except Exception as e:
         print(f"    draw {i}: draft FAILED ({str(e)[:70]})")
         return None
@@ -100,7 +107,7 @@ def _one_draw(i, writer_cfg, judge_cfg, sender):
     if _wc(body) > WORD_CEILING:
         subject, body = _tighten(writer_cfg, subject, body, sender)
         tightened = True
-    sc = quality.score(judge_cfg, LEAD, subject, body, BRIEF)
+    sc = quality.score(judge_cfg, LEAD, subject, body, brief)
     score = sc["score"] if sc else None
     flag = "" if score is not None else " (judge unavailable)"
     tg = " tightened" if tightened else ""
@@ -110,14 +117,14 @@ def _one_draw(i, writer_cfg, judge_cfg, sender):
             "subject": subject, "body": body, "tightened": tightened}
 
 
-def _run_side(label, writer_cfg, judge_cfg, n, gentle=False):
+def _run_side(label, writer_cfg, judge_cfg, n, brief, gentle=False):
     print(f"\n{'='*70}\n  {label}   (N={n})\n{'='*70}")
     ai.reset_breakers()          # once per side: a truly-dead provider then trips and is skipped
     sender = (writer_cfg.get("from_name") or writer_cfg.get("client_name") or "our team").strip()
     draws = []
     for i in range(1, n + 1):
         ai.reset_usage()
-        d = _one_draw(i, writer_cfg, judge_cfg, sender)
+        d = _one_draw(i, writer_cfg, judge_cfg, sender, brief)
         if d:
             draws.append(d)
         if gentle and i < n:
@@ -161,10 +168,11 @@ def main():
           f"word ceiling={WORD_CEILING}   runs/side={n}")
     print("Judge held CONSTANT (free chain). Length-guard applied to BOTH sides.")
 
+    brief = _brief(base)
     judge_cfg = _writer_cfg(base, FREE_CHAIN)
-    free_draws = _run_side("WRITER = FREE chain", _writer_cfg(base, FREE_CHAIN), judge_cfg, n)
+    free_draws = _run_side("WRITER = FREE chain", _writer_cfg(base, FREE_CHAIN), judge_cfg, n, brief)
     opus_draws = _run_side("WRITER = OPUS (premium)", _writer_cfg(base, ["anthropic"] + FREE_CHAIN, opus=True),
-                           judge_cfg, n, gentle=True)
+                           judge_cfg, n, brief, gentle=True)
 
     print(f"\n{'#'*70}\n  VERDICT ({n} draws/side, same judge)\n{'#'*70}")
     free = _summ("FREE chain:", free_draws, wants=None)
