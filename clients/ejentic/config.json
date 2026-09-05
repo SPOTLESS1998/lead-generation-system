@@ -3,11 +3,17 @@
   "from_name": "Ejeh Peter",
   "reply_to": null,
   "physical_address": "REPLACE-ME: your business postal address (required by CAN-SPAM before real sends)",
-  "unsubscribe_base_url": "http://localhost:5002",
+  "unsubscribe_base_url": "https://audit.ejentic.xyz",
   "copy_provider": "gemini",
   "gemini_model": "gemini-2.5-flash",
   "nvidia_model": "mistralai/mistral-nemotron",
-  "freellmapi_model": ["openai/gpt-oss-120b", "gemini-3.1-pro-preview", "command-a-03-2025", "mistral-large-latest", "gemini-2.5-flash"],
+  "freellmapi_model": [
+    "openai/gpt-oss-120b",
+    "gemini-3.1-pro-preview",
+    "command-a-03-2025",
+    "mistral-large-latest",
+    "gemini-2.5-flash"
+  ],
   "copy": {
     "premium": false,
     "anthropic_model": "claude-opus-4-8",
@@ -57,7 +63,10 @@
     "max_results": 10,
     "max_leads": 50,
     "require_email": true,
-    "scrape_pages": ["", "contact"],
+    "scrape_pages": [
+      "",
+      "contact"
+    ],
     "max_workers": 3
   },
   "timezone": "Africa/Lagos",
@@ -69,7 +78,11 @@
   },
   "reminders": {
     "enabled": true,
-    "lead_times_min": [60, 30, 15],
+    "lead_times_min": [
+      60,
+      30,
+      15
+    ],
     "poll_seconds": 60,
     "email": true,
     "desktop": true
@@ -93,7 +106,10 @@
     "mode": "controlled",
     "controlled_inbox_env": "SMTP_USER",
     "daily_global_cap": 50,
-    "throttle_seconds": { "min": 20, "max": 60 },
+    "throttle_seconds": {
+      "min": 20,
+      "max": 60
+    },
     "mailboxes": [
       {
         "smtp_host": "smtp.gmail.com",
@@ -114,5 +130,6 @@
     "local accounting firms lagos nigeria",
     "real estate agencies abuja",
     "e-commerce fashion stores nigeria"
-  ]
+  ],
+  "website_url": "https://ejentic.xyz"
 }

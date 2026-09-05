@@ -1,37 +1,58 @@
 # ── Ejentic audit + approval server ─────────────────────────────────────────
-# Paste this block into the VPS Caddyfile (the same file that serves the main
-# site, once ejentic.xyz is registered and the site is deployed there). Caddy auto-provisions a real HTTPS certificate for this name the
-# moment the DNS record
+# DEPLOYED AND LIVE since 2026-09-05 on the VPS (88.96.57.79) at
+# https://audit.ejentic.xyz — this file is the reference copy of the block that
+# now sits in /etc/caddy/Caddyfile. That server file is THE single source of
+# truth for every hostname on the box; never let a script overwrite it.
+#
+# Caddy auto-provisioned a real Let's Encrypt certificate for this name once
 #
 #     audit.ejentic.xyz   A   88.96.57.79
 #
-# is live. One subdomain serves EVERY client — they are told apart by the
+# resolved. One subdomain serves EVERY client — they are told apart by the
 # <client> segment already in the route (/magnet/<client>/<token>).
+#
+# ⚠️ DIRECTIVE NAME IS CADDY-VERSION DEPENDENT (learned the hard way on deploy):
+#     Caddy  < 2.8  ->  basicauth   (ONE word)   <-- the VPS runs 2.6.2, so this
+#     Caddy >= 2.8  ->  basic_auth  (TWO words)      file uses `basicauth`.
+# Using the wrong one fails at config-parse time. ALWAYS validate before reload
+# so a bad edit can never take the main site down with it:
+#
+#     sudo caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
+#     sudo systemctl reload caddy      # reload, never restart
+#
+# The password hash is generated ON THE VPS and NEVER committed here:
+#     ssh -t ubuntu@88.96.57.79 'caddy hash-password'
+# It prints a 60-char bcrypt string starting `$2a$14$`. Paste that in place of
+# REPLACE_WITH_BCRYPT_HASH in the SERVER's file only. (The hash is one-way, but
+# it is still crackable offline given the ciphertext — keep it off git.)
 
 audit.ejentic.xyz {
 	encode gzip
 
 	# ── PRIVATE ──────────────────────────────────────────────────────────────
-	# The internal approve/decline dashboard + appointments view. These must
-	# NEVER be public once this is on a real domain (they let anyone approve
-	# leads or read your pipeline). Password-protect them.
+	# The internal dashboard, appointments view, and pipeline-health/accounting
+	# page. These must NEVER be public: they let anyone approve leads, read the
+	# whole pipeline, or see spend and unit economics.
 	#
-	# Generate the password hash ON THE VPS with:   caddy hash-password
-	# then replace REPLACE_WITH_BCRYPT_HASH below with what it prints.
-	# (Older Caddy versions use the one-word directive `basicauth` instead of
-	#  `basic_auth` — swap it if Caddy complains on reload.)
-	@private path / /approve/* /decline/* /appointments /appointments/*
-	basic_auth @private {
+	# NOTE: /health is PRIVATE here, deliberately differing from the original
+	# draft of this file. It is not a bare uptime ping — approval_server.py's
+	# /health renders token spend, notional cost, cost-per-lead/booking and the
+	# open-fault list. That is business data. Consequence: an external uptime
+	# monitor pointed at /health gets a 401. If you want uptime checks, add a
+	# separate bare endpoint that returns "ok" and leaks nothing, and leave it
+	# out of the @private matcher below.
+	@private path / /approve/* /decline/* /appointments /appointments/* /health
+	basicauth @private {
 		ejentic REPLACE_WITH_BCRYPT_HASH
 	}
 
 	# ── PUBLIC ───────────────────────────────────────────────────────────────
 	# Everything else is prospect-facing and stays open:
 	#   /magnet/<client>/<token>   the personalized audit page (the "free gift")
-	#   /unsubscribe/<token>       CAN-SPAM one-click opt-out
+	#   /unsubscribe/<token>       CAN-SPAM one-click opt-out  (must never lock)
 	#   /interested/<token>        one-click "yes, book me"
 	#   /not-interested/<token>    one-click "no thanks"
-	#   /health                    uptime check
-	# All routes (private + public) are served by the Flask app on localhost:5002.
+	# All routes (private + public) are served by the Flask app on localhost:5002,
+	# which binds to loopback ONLY — Caddy is the sole path in from the internet.
 	reverse_proxy 127.0.0.1:5002
 }
