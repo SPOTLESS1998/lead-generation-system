@@ -62,7 +62,7 @@ A system is redeployable when all of these hold:
 | System | Redeployable | Notes |
 |---|---|---|
 | `lead-generation-system` | ✅ reference implementation | 10/10 tables tenant-scoped; `offerings` in config; validation raises; `scripts/new_client.py`; `tests/test_multitenancy.py` |
-| `ejentic-rag-system` | ⬜ not yet audited | Next — the other system holding per-client data |
+| `ejentic-rag-system` | ✅ compliant (2026-09-06) | Audit DB moved to `data/<client>/audit.db` + a `client` column every read filters on; clearance tags come from the tenant's own `clearance_levels`, not a hardcoded set; `auth` block names env vars and refuses to boot if `required:true` with no keys; `backend/tests/` (5 suites, no keys) |
 | `ejentic-agents` | ⬜ not yet audited | |
 | `ai-agency` (website) | ⬜ not yet audited | |
 | `local-research-agent` | ⬜ not yet audited | |
