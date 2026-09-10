@@ -23,7 +23,20 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
 
+from .leads import domain_key
+
+# The lead lifecycle, in order:
+#   sourced   — discovered, qualified and BANKED. Never contacted. This is the
+#               durable lead list: a lead reaches this state the moment discovery
+#               qualifies it, whether or not it is ever drafted.
+#   queued    — claimed by the drafter for this run (a short-lived working state).
+#   approved  — the operator approved the draft.
+#   sent      — actually dispatched.
+SOURCED = "sourced"
+
 # A lead is considered "already handled" (skip on re-runs) in any of these states.
+# `sourced` is deliberately NOT here: a banked lead has never been contacted, so it
+# must stay eligible for drafting on a later run.
 CONTACTED_STATES = ("queued", "approved", "sent")
 
 _SCHEMA = """
@@ -38,6 +51,8 @@ CREATE TABLE IF NOT EXISTS leads (
     website_url  TEXT,
     company_description TEXT,          -- AI one-liner: what this company does
     company_facts       TEXT,          -- richer grounding facts for the cold-email opener
+    website_domain TEXT,               -- normalised host, so a later run can skip a
+                                       -- business we have already paid to scrape
     niche        TEXT,
     status       TEXT NOT NULL DEFAULT 'new',
     created_at   TEXT NOT NULL,
@@ -193,25 +208,97 @@ def _migrate(conn):
         if col not in lead_cols:
             conn.execute(f"ALTER TABLE leads ADD COLUMN {col} TEXT")
 
+    # website_domain (added with the durable lead list): the cross-run de-dupe key.
+    # Backfilled from website_url for every pre-existing row, so a DB built before
+    # this change starts skipping known businesses immediately rather than after it
+    # has re-scraped them all once.
+    if "website_domain" not in lead_cols:
+        conn.execute("ALTER TABLE leads ADD COLUMN website_domain TEXT")
+        rows = conn.execute(
+            "SELECT id, website_url FROM leads WHERE website_url IS NOT NULL AND website_url != ''"
+        ).fetchall()
+        for r in rows:
+            key = domain_key(r["website_url"])
+            if key:
+                conn.execute("UPDATE leads SET website_domain=? WHERE id=?", (key, r["id"]))
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(client, website_domain)")
+
     conn.commit()
 
 
 # --- leads -----------------------------------------------------------------
 
 def upsert_lead(conn, client, lead, niche=None, status="queued"):
-    """Insert a lead if new; leave an existing lead's status untouched."""
+    """Insert a lead if new; leave an existing lead's status untouched.
+
+    DO NOTHING on conflict is deliberate: re-discovering a business must never
+    rewind a lead that has already progressed (or been suppressed). To move a lead
+    forward, call set_status() explicitly rather than re-upserting it.
+    """
     conn.execute(
         """INSERT INTO leads
                (client, email, first_name, last_name, title, company_name, website_url,
-                company_description, company_facts, niche, status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                company_description, company_facts, website_domain, niche, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(client, email) DO NOTHING""",
         (client, lead.get("email"), lead.get("first_name"), lead.get("last_name"),
          lead.get("title"), lead.get("company_name"), lead.get("website_url"),
          lead.get("company_description"), lead.get("company_facts"),
-         niche, status, _now()),
+         domain_key(lead.get("website_url")), niche, status, _now()),
     )
     conn.commit()
+
+
+def bank_leads(conn, client, leads):
+    """Persist every qualified lead as `sourced` — the durable lead list.
+
+    Called the moment discovery qualifies a batch, BEFORE any drafting decision, so
+    the list is a real asset rather than a side-effect of drafting. Returns how many
+    rows were genuinely new (existing leads are left exactly as they are, whatever
+    state they have reached).
+    """
+    before = count_leads(conn, client)
+    for lead in leads:
+        if not (lead.get("email") or "").strip():
+            continue
+        upsert_lead(conn, client, lead,
+                    niche=lead.get("ejentic_service") or None, status=SOURCED)
+    return count_leads(conn, client) - before
+
+
+def known_domains(conn, client):
+    """Every website domain already in this client's lead list.
+
+    Discovery checks this BEFORE the expensive scrape+extract phase, so a business we
+    already own is skipped without paying Firecrawl and an LLM call for it again.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT website_domain FROM leads "
+        "WHERE client=? AND website_domain IS NOT NULL AND website_domain != ''",
+        (client,),
+    ).fetchall()
+    return {r["website_domain"] for r in rows}
+
+
+def count_leads_by_status(conn, client):
+    """{status: count} across this client's lead list (for the digest + dashboard)."""
+    rows = conn.execute(
+        "SELECT status, COUNT(*) AS c FROM leads WHERE client=? GROUP BY status",
+        (client,),
+    ).fetchall()
+    return {r["status"]: r["c"] for r in rows}
+
+
+def leads_by_status(conn, client, status, limit=50):
+    """Banked leads in `status`, oldest first — the drafting pool.
+
+    Oldest-first so yesterday's surplus is used before anything found today, which is
+    what stops a growing list from starving its own backlog.
+    """
+    return conn.execute(
+        "SELECT * FROM leads WHERE client=? AND status=? ORDER BY created_at ASC, id ASC LIMIT ?",
+        (client, status, int(limit)),
+    ).fetchall()
 
 
 def lead_status(conn, client, email):

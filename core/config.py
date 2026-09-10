@@ -53,6 +53,12 @@ DEFAULTS = {
     },
     "demo_mode": False,                      # False = real AI generation
     "lead_source": "csv",                    # "csv" (curated file) | "maps_firecrawl" | "yellowpages" (auto-discovery)
+    "drafting": {                            # sourcing and drafting are metered separately
+        "daily_cap": None,                   # max drafts per run (None = MAX_PER_RUN, the hard
+                                             # ceiling). Sourcing is NOT limited by this: every
+                                             # qualified lead is banked to the list either way,
+                                             # and the surplus is drafted oldest-first later.
+    },
     "discovery": {                           # used only when lead_source == "maps_firecrawl"
         "queries": [],                       # flat Maps queries (fallback if no segments)
         "segments": [],                      # ICP segments: [{name, service, queries:[...]}, ...]

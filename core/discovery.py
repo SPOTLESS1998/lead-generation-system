@@ -38,6 +38,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 
 from core.leads import FIELDS, _looks_like_email
+from core import leads as leads_mod
 from core.ai import generate_json, DEFAULT_PROVIDERS
 from core import budget
 
@@ -392,9 +393,12 @@ def _extract_lead(cfg, business, markdown):
 # --------------------------------------------------------------------------
 
 def _domain_key(url):
-    """Normalized host (drops scheme + leading www) for de-duplication."""
-    host = (urlparse(url).netloc or url).lower()
-    return host[4:] if host.startswith("www.") else host
+    """Normalized host (drops scheme + leading www) for de-duplication.
+
+    Delegates to core.leads.domain_key so discovery's within-run de-dupe and the
+    cross-run skip in state.known_domains() can never drift apart.
+    """
+    return leads_mod.domain_key(url)
 
 
 def _queries(cfg):

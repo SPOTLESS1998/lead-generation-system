@@ -27,6 +27,9 @@
   },
   "demo_mode": false,
   "lead_source": "maps_firecrawl",
+  "drafting": {
+    "daily_cap": 10
+  },
   "discovery": {
     "segments": [
       {

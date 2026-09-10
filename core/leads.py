@@ -8,6 +8,7 @@ rest of the pipeline is unchanged.
 
 import os
 import csv
+from urllib.parse import urlparse
 
 FIELDS = ["first_name", "last_name", "title", "email",
           "company_name", "company_description", "website_url",
@@ -20,6 +21,27 @@ FIELDS = ["first_name", "last_name", "title", "email",
 
 def _looks_like_email(value):
     return "@" in value and "." in value.split("@")[-1]
+
+
+def domain_key(url):
+    """Normalized host (no scheme, no leading www) — the de-duplication key for a
+    business's website.
+
+    Lives here rather than in core/discovery.py because two callers now need to agree
+    on it exactly: discovery de-dupes the businesses found within one run, and
+    core/state.py stores the same key so a LATER run can recognise a business it has
+    already paid to scrape. If the two ever disagreed, the cross-run skip would
+    silently stop working and we would quietly re-buy leads we already own.
+
+    Returns "" for a missing or unparseable URL — an empty key never matches, so a
+    lead with no website is simply never skipped as a duplicate.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    host = (urlparse(raw).netloc or raw).lower().strip()
+    host = host.split("@")[-1].split(":")[0]      # drop any userinfo / :port
+    return host[4:] if host.startswith("www.") else host
 
 
 def load_leads(client_cfg):

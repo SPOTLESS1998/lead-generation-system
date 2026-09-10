@@ -16,6 +16,9 @@
   },
 
   "lead_source": "csv",
+  "drafting": {
+    "daily_cap": 10
+  },
   "discovery": {
     "max_leads": 10,
     "max_results": 12,

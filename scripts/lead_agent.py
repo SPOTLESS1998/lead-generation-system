@@ -13,7 +13,47 @@ from core.ai import generate, generate_json
 
 # Safety valve: how many drafts to prepare in a single run (no point drafting more
 # than a day's sending capacity). The sending cap is enforced separately at send time.
+# This is the hard ceiling; a client can choose a LOWER everyday number via
+# `drafting.daily_cap` in its config (see draft_cap below).
 MAX_PER_RUN = 50
+
+
+def draft_cap(cfg, preview_limit=None):
+    """How many drafts this run may produce.
+
+    Sourcing and drafting are deliberately decoupled: discovery banks every qualified
+    lead it finds (cheap, and the list is the asset), while drafting is metered to
+    what a human can actually review in a day. The surplus waits in the list as
+    `sourced` and is drafted oldest-first on later runs.
+    """
+    if preview_limit:
+        return int(preview_limit)
+    configured = (cfg.get("drafting") or {}).get("daily_cap")
+    if configured is None:
+        return MAX_PER_RUN
+    return max(0, min(int(configured), MAX_PER_RUN))
+
+
+def _lead_from_row(row):
+    """Rehydrate a banked DB row into the lead dict the drafter expects.
+
+    Drafting always reads from the lead LIST, never straight from the scrape, so a
+    lead found today and one banked last week travel the identical code path (and
+    `niche` — how the row stores the matched offering — becomes `ejentic_service`
+    again, which is what the strategist keys off).
+    """
+    row = dict(row)
+    return {
+        "first_name": row.get("first_name") or "",
+        "last_name": row.get("last_name") or "",
+        "title": row.get("title") or "",
+        "email": row.get("email") or "",
+        "company_name": row.get("company_name") or "",
+        "company_description": row.get("company_description") or "",
+        "company_facts": row.get("company_facts") or "",
+        "website_url": row.get("website_url") or "",
+        "ejentic_service": row.get("niche") or "",
+    }
 
 
 def print_step(step):
@@ -372,6 +412,8 @@ def main(preview=False, limit=None):
     _gate = "on" if ((cfg.get("copy", {}) or {}).get("quality_gate", {}) or {}).get("enabled") else "off"
     print(f"   client={cfg['client']}  send_mode={cfg['sending']['mode']}  "
           f"demo_mode={cfg['demo_mode']}  premium_copy={_prem}  quality_gate={_gate}")
+    print(f"   draft_cap={draft_cap(cfg, preview_limit=limit if preview else None)}/run  "
+          f"(sourcing is uncapped by this — every qualified lead is banked)")
     if preview:
         print(f"   🔎 PREVIEW — real scrape+facts+agents+metrics on a THROWAWAY db; "
               f"nothing queued/emailed/sent (sample: {limit}).")
@@ -379,7 +421,7 @@ def main(preview=False, limit=None):
 
     conn = state.connect(preview_db or cfg["paths"]["db"])
     run_id = obs.new_run_id()   # groups every event this run emits in the ledger
-    max_drafts = limit if preview else MAX_PER_RUN
+    max_drafts = draft_cap(cfg, preview_limit=limit if preview else None)
 
     # Lead source is config-selectable: a curated CSV, or live auto-discovery
     # (Google Maps or Yellow Pages → Firecrawl → AI extraction). All return
@@ -413,13 +455,35 @@ def main(preview=False, limit=None):
         else:
             print("\n⚠️  No usable leads in clients/{}/leads.csv. "
                   "Add real contacts (see clients/_template/leads.csv) and re-run.".format(cfg["client"]))
-        return
+
+    # --- Bank the list FIRST ------------------------------------------------
+    # Every qualified lead is persisted as `sourced` before a single draft is
+    # attempted, and independently of the draft cap. This is the whole point of the
+    # lead list: what we scraped is an asset we keep, not a by-product of drafting.
+    # A lead we never draft today is still ours tomorrow.
+    if all_leads:
+        newly_banked = state.bank_leads(conn, cfg["client"], all_leads)
+        print_step(f"🏦 [List] Banked {newly_banked} new lead(s) "
+                   f"({len(all_leads) - newly_banked} already known).")
+
+    # --- Draft from the LIST, oldest first ---------------------------------
+    # Reading the pool from the DB (not from today's scrape) means the backlog gets
+    # used before anything new, and one code path serves both.
+    pool = [_lead_from_row(r) for r in
+            state.leads_by_status(conn, cfg["client"], state.SOURCED, limit=max_drafts * 4)]
+    totals = state.count_leads_by_status(conn, cfg["client"])
+    print_step(f"📇 [List] {sum(totals.values())} lead(s) on the list "
+               f"{totals or '{}'}; drafting up to {max_drafts} this run.")
+    if not pool:
+        print("\n   Nothing new to draft — every banked lead has already been drafted "
+              "or contacted. The list is still growing; add queries or wait for the "
+              "next rotation window.")
 
     drafted = 0
-    for lead in all_leads:
+    for lead in pool:
         if drafted >= max_drafts:
-            label = "sample limit" if preview else "MAX_PER_RUN"
-            print_step(f"⏹️  Reached {label} ({max_drafts}); stopping this run.")
+            label = "sample limit" if preview else "daily draft cap"
+            print_step(f"⏹️  Reached the {label} ({max_drafts}); stopping this run.")
             break
 
         skip, reason = suppression.should_skip(conn, cfg["client"], lead["email"])
@@ -427,10 +491,10 @@ def main(preview=False, limit=None):
             print(f"   ⏭️  Skipping {lead['email']} ({reason}).")
             continue
 
-        # Record intent BEFORE drafting so a re-run won't re-contact this lead.
-        # The ICP tag (which Ejentic offering they matched) is stored as the niche.
-        state.upsert_lead(conn, cfg["client"], lead,
-                          niche=lead.get("ejentic_service") or None, status="queued")
+        # Claim this lead for this run BEFORE drafting, so a concurrent or repeated
+        # run won't draft it twice. The lead is already banked, so this only moves
+        # its status forward — it can never lose the contact details.
+        state.set_status(conn, cfg["client"], lead["email"], "queued")
 
         magnet_url = None
         magnet_token = None
@@ -449,14 +513,16 @@ def main(preview=False, limit=None):
                     conn, cfg, lead, run_id)
             except Exception as e:
                 print(f"   ❌ Generation failed for {lead['company_name']}: {e}. "
-                      f"Rolling back so this lead retries on the next run.")
-                # We 'claimed' this lead as queued BEFORE drafting so a re-run
-                # wouldn't double-draft it. Since no draft was produced, undo that
-                # claim by removing the row — otherwise a stuck 'queued' status
-                # counts as already_contacted forever and the lead is never retried.
-                conn.execute("DELETE FROM leads WHERE client=? AND email=?",
-                             (cfg["client"], lead["email"]))
-                conn.commit()
+                      f"Releasing the claim so this lead retries on the next run.")
+                # We 'claimed' this lead as queued BEFORE drafting so a re-run wouldn't
+                # double-draft it. No draft was produced, so release the claim by
+                # returning it to the list as `sourced`.
+                #
+                # This used to DELETE the row, which threw away a perfectly good
+                # scraped contact every time a provider hiccuped — the lead had to be
+                # re-discovered and re-scraped from scratch. Rolling the STATUS back
+                # keeps the contact and still frees it for retry.
+                state.set_status(conn, cfg["client"], lead["email"], state.SOURCED)
                 continue
 
         print("\n📝 --- DRAFTED PITCH READY ---")
