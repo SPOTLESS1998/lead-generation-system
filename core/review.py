@@ -19,7 +19,7 @@ import uuid
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-from . import config, spam, sender
+from . import config, spam, sender, state
 
 PENDING_FILE = os.path.join(config.ROOT, "pending_leads.json")
 
@@ -47,6 +47,13 @@ def save_pending(entry):
     Every draft is run through the offline spam linter here (the single chokepoint
     both agents pass through), so the score + flagged words are stashed on the entry
     and shown to the operator in the approval email.
+
+    Also moves the lead to `awaiting_approval` in the lead table. That lives here, at
+    the one chokepoint both drafting entry points pass through, rather than at each
+    call site — the same reason the spam check is here. A second call site that forgot
+    it would leave the lead in `queued`, which the stall detector correctly reads as
+    "the drafter never finished", reopening the escalation storm this state split
+    exists to close.
     """
     entry.setdefault("kind", "cold")
     entry["status"] = "pending"
@@ -57,6 +64,18 @@ def save_pending(entry):
     lead_id = str(uuid.uuid4())[:8]
     leads[lead_id] = entry
     _write(leads)
+
+    client = entry.get("client")
+    target = entry.get("target_email")
+    if client and target:
+        try:
+            conn = state.connect(config.client_db_path(client))
+            state.set_status(conn, client, target, state.AWAITING_APPROVAL)
+            conn.close()
+        except Exception as e:
+            # Never fail the draft over this: the queue entry is what the operator
+            # acts on, and a lead left in `queued` is at worst a noisy stall alert.
+            print(f"⚠️  could not mark {target} awaiting_approval: {e}")
     return lead_id
 
 

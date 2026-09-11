@@ -107,8 +107,11 @@ DEFAULTS = {
     "observability": {                        # self-healing + accounting ledger (see core/observability.py)
         "enabled": True,                      # False = pipeline still runs, just isn't tracked
         "poll_seconds": 60,                   # how often the observer agent scans the ledger
-        "stall_minutes": {                    # a lead stuck in a state longer than this => a stall to heal
-            "queued": 120,                    # queued but never sent
+        "stall_minutes": {                    # a lead stuck in a MACHINE state longer than this => a stall to heal
+            "queued": 120,                    # claimed for drafting but never finished
+                                              # NEVER add 'awaiting_approval' here — that is a
+                                              # lead correctly waiting on a human, and flagging
+                                              # it opens a fault the healer cannot fix.
             "replied": 240,                   # replied but not yet actioned
         },
         "max_heal_attempts": 3,               # tries before the healer escalates to a human
@@ -196,6 +199,16 @@ def _resolve_mailbox(m, client):
     }
 
 
+def client_db_path(name=None):
+    """The state DB path for a client, WITHOUT loading/validating its whole config.
+
+    For callers that already have a client name and only need the database location.
+    Keep this as the single definition of where a tenant's DB lives — load_client()
+    uses it too, so the two can never disagree.
+    """
+    return str(DATA_DIR / (name or active_client()) / "state.sqlite")
+
+
 def load_client(name=None):
     name = name or active_client()
     cfg_path = CLIENTS_DIR / name / "config.json"
@@ -212,7 +225,7 @@ def load_client(name=None):
     cfg["client"] = name
     cfg["paths"] = {
         "root": str(ROOT),
-        "db": str(DATA_DIR / name / "state.sqlite"),
+        "db": client_db_path(name),
         "leads_csv": str(CLIENTS_DIR / name / "leads.csv"),
     }
     cfg["sending"]["mailboxes"] = [

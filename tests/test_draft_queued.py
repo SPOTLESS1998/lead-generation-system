@@ -56,11 +56,14 @@ _BODY = ("Hi there,\n\nAcme Solar's Maitama install work stands out. My guess is
 
 
 def _fresh_env(tmpdir):
-    """A temp DB holding one queued lead, plus a cfg pointed at it."""
+    """A temp DB holding one banked-but-undrafted lead, plus a cfg pointed at it."""
     db = os.path.join(tmpdir, "state.sqlite")
     conn = state.connect(db)
+    # 'sourced' is the state draft_queued exists to serve: banked by discovery, never
+    # drafted (either it was past the draft cap, or an earlier draft failed and
+    # released its claim).
     state.upsert_lead(conn, "acme", dict(_LEAD), niche="AI Lead Generation System",
-                      status="queued")
+                      status=state.SOURCED)
     conn.commit()
     cfg = {
         "client": "acme", "client_name": "Ejentic AI", "from_name": "Ejentic AI",
@@ -201,7 +204,10 @@ with tempfile.TemporaryDirectory() as td:
     row = conn3.execute("SELECT status FROM leads WHERE client='acme' AND email=?",
                         (_LEAD["email"],)).fetchone()
     check("the lead row still exists after a failure", row is not None)
-    check("the lead is still 'queued' for a retry", row and row["status"] == "queued")
+    # The claim is released back to the pool rather than deleted, so the lead is
+    # retryable and its contact details survive the failure.
+    check("the lead is back in the drafting pool ('sourced') for a retry",
+          row and row["status"] == state.SOURCED)
     conn3.close()
 
 

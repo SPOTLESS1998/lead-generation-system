@@ -17,9 +17,11 @@ def add(conn, client, email, reason="manual"):
            ON CONFLICT(client, email) DO UPDATE SET reason=excluded.reason""",
         (client, email, reason, datetime.now(timezone.utc).isoformat()),
     )
-    # Reflect it on the lead record too, if we have one.
+    # Reflect it on the lead record too, if we have one. status_changed_at is stamped
+    # for the same reason set_status does it: stall detection measures from it.
     conn.execute(
-        "UPDATE leads SET status='suppressed' WHERE client=? AND email=?", (client, email)
+        "UPDATE leads SET status='suppressed', status_changed_at=? WHERE client=? AND email=?",
+        (datetime.now(timezone.utc).isoformat(), client, email),
     )
     conn.commit()
 

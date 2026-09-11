@@ -112,6 +112,21 @@ def main():
             sys.exit(f"missing: {p}")
 
     src = sqlite3.connect(a.incoming_db)
+
+    # Migrate the destination FIRST. shared_cols() intersects the two schemas, so an
+    # un-migrated VPS DB would silently narrow the copy and land new rows missing the
+    # columns this repo has added (website_domain, status_changed_at). Running the
+    # repo's own connect() applies the same additive migrations the laptop has, so the
+    # two schemas agree before anything is copied.
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from core import state as state_mod
+        state_mod.connect(a.live_db).close()
+        print("  VPS schema migrated to match this repo.\n")
+    except Exception as e:
+        print(f"  ⚠️  could not migrate the VPS schema ({e}); continuing with the "
+              f"columns both databases already share.\n")
+
     dst = sqlite3.connect(a.live_db)
 
     # The opt-out list is the VPS's, and it is the veto on everything below.

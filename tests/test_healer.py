@@ -99,7 +99,11 @@ seed_lead("s@x.com", "sent")
 fid2 = state.record_fault(conn, CLIENT, "stall", "send", "s@x.com", "stuck 2h")
 act = healer.attempt_heal(cfg, conn, dict(state.get_fault(conn, fid2)))
 ok("stall => requeue", act == "requeue")
-ok("requeue puts the lead back to 'queued'", lead_status("s@x.com") == "queued")
+# Requeue returns the lead to the DRAFTING POOL. It used to set "queued" — the very
+# state a stalled lead was already stuck in — which made the fault unresolvable and
+# looped the healer (an LLM call per pass) until it escalated to the operator.
+ok("requeue puts the lead back in the drafting pool as 'sourced'",
+   lead_status("s@x.com") == state.SOURCED)
 
 seed_lead("bad@x.com", "queued")
 fid3 = state.record_fault(conn, CLIENT, "data", "draft", "bad@x.com", "invalid email")

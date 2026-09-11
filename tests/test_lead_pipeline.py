@@ -90,7 +90,7 @@ def test_every_lead_banked_cap_only_limits_drafting():
     check("7 remain 'sourced' (banked, not drafted)",
           counts.get("sourced") == 7)
     check("5 were drafted and wait for approval",
-          counts.get("queued") == 5)
+          counts.get(state.AWAITING_APPROVAL) == 5)
     check("the list kept the leads the cap excluded", counts.get("sourced", 0) == 7)
 
 
@@ -99,7 +99,7 @@ def test_cap_zero_banks_everything():
     conn = _run_pipeline(n_leads=6, daily_cap=0)
     counts = state.count_leads_by_status(conn, "testclient")
     check("all 6 banked", counts.get("sourced") == 6)
-    check("nothing drafted", counts.get("queued", 0) == 0)
+    check("nothing drafted", counts.get(state.AWAITING_APPROVAL, 0) == 0)
 
 
 def test_failed_draft_keeps_the_lead():
@@ -108,7 +108,7 @@ def test_failed_draft_keeps_the_lead():
     counts = state.count_leads_by_status(conn, "testclient")
     check("all 4 rows still exist (nothing deleted)", sum(counts.values()) == 4)
     check("the 2 failures are back to 'sourced'", counts.get("sourced") == 2)
-    check("the 2 successes are 'queued'", counts.get("queued") == 2)
+    check("the 2 successes await approval", counts.get(state.AWAITING_APPROVAL) == 2)
     check("the failed lead's CONTACT DETAILS survived",
           conn.execute("SELECT company_name, website_url FROM leads WHERE email='c1@co1.com'")
               .fetchone()["company_name"] == "Co1")

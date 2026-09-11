@@ -1,12 +1,12 @@
-"""Draft the leads already sitting in the DB as 'queued' but never drafted.
+"""Draft the leads already on the list that have never been drafted.
 
-Discovery upserts every sourced lead as status='queued' BEFORE it drafts, and
-lead_agent leaves a lead 'queued' (for retry) if generation fails — e.g. the
-network drops mid-run. Those leads are saved but have no pending draft. This
-re-drafts them WITHOUT re-running discovery, so a transient outage doesn't cost
-a fresh Google Maps + Firecrawl scrape of the whole prospect list.
+Every discovered lead is banked as status='sourced' (see state.bank_leads), and a
+draft that fails releases its claim by returning the lead to 'sourced' rather than
+deleting it — so a transient outage leaves leads saved but undrafted. This re-drafts
+them WITHOUT re-running discovery, so an outage doesn't cost a fresh Google Maps +
+Firecrawl scrape of the whole prospect list.
 
-Scope: leads with status='queued' that don't already have a pending draft.
+Scope: leads with status='sourced' that don't already have a pending draft.
 The grounding facts (company_facts / company_description) are persisted at
 discovery time, so a re-draft reads the SAME real facts the first pass had; we
 still fall back to the company name for rows saved before facts were stored.
@@ -83,8 +83,8 @@ def main():
     rows = conn.execute(
         "SELECT email, first_name, last_name, title, company_name, website_url, niche, "
         "company_description, company_facts "
-        "FROM leads WHERE client=? AND status='queued' ORDER BY company_name",
-        (client,),
+        "FROM leads WHERE client=? AND status=? ORDER BY company_name",
+        (client, state.SOURCED),
     ).fetchall()
 
     # Skip any queued lead that already has a pending draft awaiting approval,
@@ -110,8 +110,9 @@ def main():
 
         # Gate ONLY on the real never-contact list (opt-out / bounce / manual).
         # We deliberately do NOT call suppression.should_skip here: it also treats
-        # 'queued' as "already contacted" for idempotency — but 'queued' is exactly
-        # the state we're re-drafting, so that check would skip every lead.
+        # already-drafted states as "already contacted" for idempotency — but we have
+        # already selected for 'sourced', which is by definition never contacted, and
+        # the queue check above is what stops a double-draft.
         if suppression.is_suppressed(conn, client, row["email"]):
             print(f"   ⏭️  Skipping {row['email']} (on suppression list).")
             continue
@@ -129,7 +130,7 @@ def main():
         except Exception as e:
             failed += 1
             print(f"   ❌ Generation failed for {lead['company_name']}: {e}. "
-                  f"Leaving lead 'queued' for retry.")
+                  f"Leaving lead '{state.SOURCED}' for retry.")
             continue
 
         print("\n📝 --- DRAFTED PITCH READY ---")

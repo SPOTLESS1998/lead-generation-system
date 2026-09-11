@@ -166,7 +166,12 @@ def _execute(cfg, conn, fault, kind, action, reason, attempts):
 
     if action == "requeue":
         if subject:
-            state.set_status(conn, client, subject, "queued")
+            # A stalled lead is claimed-but-unfinished (status_changed_at tells us how
+            # long). Returning it to `sourced` genuinely puts it back in the drafting
+            # pool; setting it to "queued" — what this used to do — assigned the status
+            # it was already stuck in, so the fault could never resolve and the healer
+            # re-diagnosed it (an LLM call per pass) until it escalated to a human.
+            state.set_status(conn, client, subject, state.SOURCED)
         state.update_fault(conn, fid, status="healing", action=action, kind=kind,
                            attempts=attempts, resolution=f"requeued: {reason}"[:300])
 

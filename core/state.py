@@ -26,18 +26,33 @@ from datetime import datetime, timezone
 from .leads import domain_key
 
 # The lead lifecycle, in order:
-#   sourced   — discovered, qualified and BANKED. Never contacted. This is the
-#               durable lead list: a lead reaches this state the moment discovery
-#               qualifies it, whether or not it is ever drafted.
-#   queued    — claimed by the drafter for this run (a short-lived working state).
-#   approved  — the operator approved the draft.
-#   sent      — actually dispatched.
+#   sourced           — discovered, qualified and BANKED. Never contacted. This is the
+#                       durable lead list: a lead reaches this state the moment
+#                       discovery qualifies it, whether or not it is ever drafted.
+#   queued            — CLAIMED by the drafter for this run (a short-lived working
+#                       state). A lead sitting here means the machine has it in hand
+#                       and owes us a draft, so it going stale is a real fault.
+#   awaiting_approval — a draft exists and is sitting in the operator's queue. This is
+#                       a HUMAN's turn, not a stalled machine: it may sit here for
+#                       days and that is correct behaviour.
+#   approved          — the operator approved the draft.
+#   sent              — actually dispatched.
+#
+# Why `queued` and `awaiting_approval` are separate states: they used to both be
+# `queued`, and that single overloaded value broke self-healing. The stall detector
+# flags any lead sitting in `queued` too long (observability.stall_minutes), which
+# correctly catches a dead drafter — but it ALSO flagged every draft correctly waiting
+# for a human, and the healer's remedy for a stall is to re-queue, which set the status
+# it already had. The fault could therefore never resolve, so it re-diagnosed with an
+# LLM call on every pass until it escalated and emailed the operator. At daily volume
+# that is a token-burning escalation storm. One status now means one thing.
 SOURCED = "sourced"
+AWAITING_APPROVAL = "awaiting_approval"
 
 # A lead is considered "already handled" (skip on re-runs) in any of these states.
 # `sourced` is deliberately NOT here: a banked lead has never been contacted, so it
 # must stay eligible for drafting on a later run.
-CONTACTED_STATES = ("queued", "approved", "sent")
+CONTACTED_STATES = ("queued", AWAITING_APPROVAL, "approved", "sent")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS leads (
@@ -55,6 +70,8 @@ CREATE TABLE IF NOT EXISTS leads (
                                        -- business we have already paid to scrape
     niche        TEXT,
     status       TEXT NOT NULL DEFAULT 'new',
+    status_changed_at TEXT,            -- when `status` last moved; stall detection
+                                       -- measures from here, NOT from created_at
     created_at   TEXT NOT NULL,
     UNIQUE(client, email)
 );
@@ -223,7 +240,57 @@ def _migrate(conn):
                 conn.execute("UPDATE leads SET website_domain=? WHERE id=?", (key, r["id"]))
     conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(client, website_domain)")
 
+    # status_changed_at (added with the stall-semantics fix): how long a lead has been
+    # in its CURRENT state. Stall detection used created_at, which was wrong for
+    # `queued` — a lead banked last week and claimed by the drafter this morning would
+    # have looked instantly stalled. Backfilled to created_at, which is the best
+    # available estimate for a row whose status has never moved.
+    if "status_changed_at" not in lead_cols:
+        conn.execute("ALTER TABLE leads ADD COLUMN status_changed_at TEXT")
+        conn.execute("UPDATE leads SET status_changed_at=created_at WHERE status_changed_at IS NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(client, status)")
+
+    # Split the overloaded 'queued' state. Rows written before AWAITING_APPROVAL
+    # existed used 'queued' for BOTH "the drafter is working on this" and "a draft is
+    # waiting for the operator", because that was the only value there was. Anything
+    # already parked awaiting a human decision has to move to the new state —
+    # otherwise the stall detector keeps flagging it forever and the healer burns an
+    # LLM call per pass trying to "fix" a lead that is behaving correctly. Rows left in
+    # 'queued' really are mid-draft claims.
+    #
+    # Two signals, because neither alone is complete: magnets exist only for drafts
+    # whose audit page generated successfully (that step degrades gracefully), while
+    # pending_leads.json is the arena the draft actually waits in but is a local file
+    # that may be absent on a fresh machine. A lead matches on either.
+    _reclassify_queued_as_awaiting(conn)
+
     conn.commit()
+
+
+def _reclassify_queued_as_awaiting(conn):
+    """Move pre-existing 'queued' rows that are really awaiting approval (see _migrate)."""
+    emails = set()
+    try:
+        for r in conn.execute("SELECT DISTINCT lead_email FROM magnets WHERE lead_email IS NOT NULL"):
+            emails.add(r["lead_email"])
+    except sqlite3.OperationalError:
+        pass
+    # Imported lazily: core/review.py imports core/config.py and core/sender.py, so
+    # keeping this import inside the function avoids a cycle at module load time.
+    try:
+        from . import review
+        for entry in (review.load_pending() or {}).values():
+            if entry.get("status") == "pending" and entry.get("target_email"):
+                emails.add(entry["target_email"])
+    except Exception:
+        pass   # a missing/corrupt queue must never block a DB connection
+
+    if not emails:
+        return
+    conn.executemany(
+        "UPDATE leads SET status=? WHERE status='queued' AND email=?",
+        [(AWAITING_APPROVAL, e) for e in emails],
+    )
 
 
 # --- leads -----------------------------------------------------------------
@@ -238,13 +305,14 @@ def upsert_lead(conn, client, lead, niche=None, status="queued"):
     conn.execute(
         """INSERT INTO leads
                (client, email, first_name, last_name, title, company_name, website_url,
-                company_description, company_facts, website_domain, niche, status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                company_description, company_facts, website_domain, niche, status,
+                status_changed_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(client, email) DO NOTHING""",
         (client, lead.get("email"), lead.get("first_name"), lead.get("last_name"),
          lead.get("title"), lead.get("company_name"), lead.get("website_url"),
          lead.get("company_description"), lead.get("company_facts"),
-         domain_key(lead.get("website_url")), niche, status, _now()),
+         domain_key(lead.get("website_url")), niche, status, _now(), _now()),
     )
     conn.commit()
 
@@ -309,8 +377,14 @@ def lead_status(conn, client, email):
 
 
 def set_status(conn, client, email, status):
+    """Move a lead to a new status, stamping when it happened.
+
+    status_changed_at is what stall detection measures from, so it must be updated on
+    every move — otherwise a lead claimed today but created last week reads as stalled.
+    """
     conn.execute(
-        "UPDATE leads SET status=? WHERE client=? AND email=?", (status, client, email)
+        "UPDATE leads SET status=?, status_changed_at=? WHERE client=? AND email=?",
+        (status, _now(), client, email),
     )
     conn.commit()
 
@@ -325,9 +399,9 @@ def record_send(conn, client, lead_email, mailbox, subject, redirected_to=None, 
     """Record a dispatch and mark the lead 'sent'. Ensures a leads row exists."""
     if lead_status(conn, client, lead_email) is None:
         conn.execute(
-            """INSERT INTO leads (client, email, status, created_at)
-               VALUES (?, ?, 'queued', ?) ON CONFLICT(client, email) DO NOTHING""",
-            (client, lead_email, _now()),
+            """INSERT INTO leads (client, email, status, status_changed_at, created_at)
+               VALUES (?, ?, 'sent', ?, ?) ON CONFLICT(client, email) DO NOTHING""",
+            (client, lead_email, _now(), _now()),
         )
     conn.execute(
         "INSERT INTO sends (client, lead_email, mailbox, subject, redirected_to, message_id, sent_at) "
@@ -335,7 +409,8 @@ def record_send(conn, client, lead_email, mailbox, subject, redirected_to=None, 
         (client, lead_email, mailbox, subject, redirected_to, message_id, _now()),
     )
     conn.execute(
-        "UPDATE leads SET status='sent' WHERE client=? AND email=?", (client, lead_email)
+        "UPDATE leads SET status='sent', status_changed_at=? WHERE client=? AND email=?",
+        (_now(), client, lead_email),
     )
     conn.commit()
 
@@ -394,7 +469,8 @@ def record_reply(conn, client, lead_email, message_id, in_reply_to, subject, bod
     )
     if lead_email and lead_status(conn, client, lead_email) in CONTACTED_STATES:
         conn.execute(
-            "UPDATE leads SET status='replied' WHERE client=? AND email=?", (client, lead_email)
+            "UPDATE leads SET status='replied', status_changed_at=? WHERE client=? AND email=?",
+            (_now(), client, lead_email),
         )
     conn.commit()
 
@@ -405,7 +481,8 @@ def record_booking(conn, client, lead_email, event_id, starts_at):
         (client, lead_email, event_id, starts_at, _now()),
     )
     conn.execute(
-        "UPDATE leads SET status='meeting_booked' WHERE client=? AND email=?", (client, lead_email)
+        "UPDATE leads SET status='meeting_booked', status_changed_at=? WHERE client=? AND email=?",
+        (_now(), client, lead_email),
     )
     conn.commit()
 
@@ -694,12 +771,20 @@ def has_ok_event_since(conn, client, step, subject, since_iso):
 
 
 def stalled_leads(conn, client, status, cutoff_iso, limit=200):
-    """Leads sitting in `status` since before `cutoff_iso` — a stall the observer
-    flags. Age is measured from leads.created_at: unambiguous for the primary
-    'queued but never sent' case (a queued lead older than the threshold means the
-    drafting/sending pipeline never picked it up — e.g. a dead cron)."""
+    """Leads sitting in `status` since before `cutoff_iso` — a stall the observer flags.
+
+    Age is measured from status_changed_at (when the lead ENTERED this state), not from
+    created_at. That distinction matters for the primary case, a lead stuck in
+    `queued` — meaning the drafter claimed it and never finished. Measuring from
+    created_at would flag a lead banked last week and claimed this morning as stalled
+    the moment it was picked up.
+
+    Note `awaiting_approval` is deliberately NOT a state this should be called with: a
+    draft waiting for a human is working exactly as intended, however long it sits.
+    """
     return conn.execute(
-        "SELECT * FROM leads WHERE client=? AND status=? AND created_at <= ? "
-        "ORDER BY created_at ASC LIMIT ?",
+        "SELECT * FROM leads WHERE client=? AND status=? "
+        "AND COALESCE(status_changed_at, created_at) <= ? "
+        "ORDER BY COALESCE(status_changed_at, created_at) ASC LIMIT ?",
         (client, status, cutoff_iso, int(limit)),
     ).fetchall()

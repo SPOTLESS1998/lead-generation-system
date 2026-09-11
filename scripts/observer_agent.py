@@ -67,18 +67,30 @@ def flag_error_faults(cfg, conn):
 
 
 def flag_stalls(cfg, conn):
-    """Flag leads stuck in a state too long (a silent misstep with no error row).
+    """Flag leads stuck in a MACHINE state too long (a silent misstep with no error row).
 
-    Driven by observability.stall_minutes, e.g. {"queued": 120}. The primary,
-    unambiguous case is 'queued but never sent' — a queued lead older than its
-    threshold means the drafting/sending pipeline never processed it (a crashed
-    agent, a dead cron). One fault per stalled lead (record_fault dedups).
+    Driven by observability.stall_minutes, e.g. {"queued": 120}. The primary case is
+    'queued' — the drafter claimed a lead and never finished (a crashed agent, a dead
+    cron) — and age is measured from status_changed_at via state.stalled_leads.
+
+    A state where the lead is legitimately WAITING ON A HUMAN must never be listed in
+    stall_minutes. `awaiting_approval` is the one that matters: a draft can sit in the
+    review queue for days, which is correct, and flagging it would open a fault the
+    healer can only "fix" by re-queueing a lead that is already exactly where it should
+    be. This function warns loudly if a config tries it anyway, because the failure is
+    otherwise invisible — a slow-motion stream of bogus escalations.
     """
     client = cfg["client"]
     stall_cfg = (cfg.get("observability", {}) or {}).get("stall_minutes", {}) or {}
+    human_states = {state.AWAITING_APPROVAL, state.SOURCED}
     now = datetime.now(timezone.utc)
     flagged = 0
     for status, minutes in stall_cfg.items():
+        if status in human_states:
+            print(f"   ⚠️  stall_minutes lists '{status}', which is a waiting-on-a-human "
+                  f"state, not a machine stall — ignoring it. Remove it from "
+                  f"observability.stall_minutes in the client config.")
+            continue
         cutoff = (now - timedelta(minutes=int(minutes))).isoformat()
         for lead in state.stalled_leads(conn, client, status, cutoff):
             detail = f"lead stuck in '{status}' for over {minutes} min (no progress)"
