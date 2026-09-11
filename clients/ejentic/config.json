@@ -76,7 +76,11 @@
       "",
       "contact"
     ],
-    "max_workers": 3
+    "max_workers": 3,
+    "rotation": {
+      "enabled": true,
+      "queries_per_run": 6
+    }
   },
   "timezone": "Africa/Lagos",
   "booking": {

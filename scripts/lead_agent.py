@@ -435,7 +435,7 @@ def main(preview=False, limit=None):
     elif cfg.get("lead_source") == "yellowpages":
         from core import yellowpages
         print_step("📖 Auto-sourcing leads (Yellow Pages → Firecrawl → AI extraction)...")
-        all_leads, skipped = yellowpages.load_leads(cfg)
+        all_leads, skipped = yellowpages.load_leads(cfg, conn=conn)
         print_step(f"🔍 Sourced {len(all_leads)} lead(s) "
                    f"({skipped} listing(s) skipped: no site/email or scrape failed).")
     else:

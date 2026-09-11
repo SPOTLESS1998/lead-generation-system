@@ -23,7 +23,11 @@
     "max_leads": 10,
     "max_results": 12,
     "location": "REPLACE-ME City, Country",
-    "segments": []
+    "segments": [],
+    "rotation": {
+      "enabled": false,
+      "queries_per_run": 4
+    }
   },
 
   "copy_provider": "gemini",

@@ -35,10 +35,12 @@ import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 
 from core.leads import FIELDS, _looks_like_email
 from core import leads as leads_mod
+from core import state
 from core.ai import generate_json, DEFAULT_PROVIDERS
 from core import budget
 
@@ -236,6 +238,7 @@ def _maps_search(spec, max_results, slug):
             "rating": p.get("rating"),                 # float | None — gated social proof
             "review_count": p.get("userRatingCount"),  # int | None
             "types": p.get("types") or [],             # category hint for the extractor
+            "query": query,                            # which search surfaced it (yield reporting)
             "segment": segment,
             "ejentic_service": service,
         })
@@ -433,6 +436,40 @@ def _query_specs(cfg):
     return [{"query": q, "segment": "", "service": ""} for q in _queries(cfg)]
 
 
+def _rotate_specs(specs, cfg, day_ordinal=None):
+    """Take a rolling daily window over the query plan, so one morning's run doesn't
+    fire every configured search.
+
+    Config: `discovery.rotation = {"enabled": true, "queries_per_run": 4}`.
+    Disabled (the default) returns the plan unchanged, so nothing changes for anyone
+    who has not opted in.
+
+    The window advances by day, wrapping around, so a 12-query plan at 4/run covers
+    everything every 3 days. The point is cost: each Maps query costs an API call and
+    every business it returns costs a Firecrawl scrape plus an LLM extraction, and
+    re-firing all 12 every morning pays that bill daily.
+
+    HONEST LIMITATION, worth knowing: rotation spreads cost, it does NOT create new
+    leads. A given query returns much the same top `max_results` businesses each
+    time, so once those are on the list that query is largely spent until you widen
+    `max_results` or add queries/cities. The per-query yield report printed by
+    load_leads is what makes that exhaustion visible instead of silent.
+    """
+    rot = (cfg.get("discovery") or {}).get("rotation") or {}
+    if not rot.get("enabled") or not specs:
+        return specs, False
+    per_run = int(rot.get("queries_per_run") or 0)
+    if per_run <= 0 or per_run >= len(specs):
+        return specs, False
+    if day_ordinal is None:
+        day_ordinal = datetime.now(timezone.utc).date().toordinal()
+    # Deterministic per-day offset: same day => same window (a re-run is idempotent).
+    start = (day_ordinal * per_run) % len(specs)
+    window = [specs[(start + i) % len(specs)] for i in range(per_run)]
+    return window, True
+
+
+
 def _process_business(ext_cfg, business, fc_slug, scrape_pages):
     """Scrape one business (homepage-first, early-stop on email) and extract a lead.
 
@@ -506,6 +543,10 @@ def load_leads(client_cfg, conn=None):
             "client config."
         )
 
+    specs, rotated = _rotate_specs(specs, client_cfg)
+    if rotated:
+        print(f"   🔄 Rotation on: running {len(specs)} of the configured search(es) today.")
+
     # --- Phase 1: run every Maps query concurrently, then de-dupe by domain. ---
     print(f"   \U0001f5fa️  Running {len(specs)} Maps search(es) "
           f"({workers} at a time)...")
@@ -531,6 +572,40 @@ def load_leads(client_cfg, conn=None):
         unique.append(biz)
     print(f"   🔎 {len(unique)} unique business(es) to enrich "
           f"(from {len(businesses)} total hits).")
+
+    # --- Skip businesses we already own, BEFORE paying to scrape them ---------
+    # Within-run de-dupe above stops us scraping the same site twice in one morning.
+    # This stops us scraping it again TOMORROW — and every morning after that. The
+    # check is deliberately placed before Phase 2, because Phase 2 is where the money
+    # goes (a Firecrawl scrape plus an LLM extraction per business). Only once the
+    # site has been scraped and turned into a lead do we know its contact address, so
+    # the domain is what we can key on here.
+    already_owned = 0
+    if conn is not None:
+        known = state.known_domains(conn, client_cfg["client"])
+        if known:
+            fresh = [b for b in unique if _domain_key(b["website_url"]) not in known]
+            already_owned = len(unique) - len(fresh)
+            if already_owned:
+                print(f"   💾 {already_owned} business(es) already on the lead list — "
+                      f"skipped without re-scraping.")
+            unique = fresh
+
+    # Per-query yield: how many businesses each search is still contributing that we
+    # did not already have. A query reporting 0 new leads every time it comes round in
+    # the rotation is spent, and the fix is more/wider queries (a config change), not
+    # a code change. Reported rather than acted on, so the signal is visible.
+    if unique:
+        by_query = {}
+        for biz in unique:
+            by_query.setdefault(biz.get("query") or "(untagged)", 0)
+            by_query[biz.get("query") or "(untagged)"] += 1
+        for q in sorted(by_query):
+            print(f"      ↳ new from {q!r}: {by_query[q]}")
+    elif businesses:
+        print("   ⚠️  Every business found was already on the lead list. This is not an "
+              "error, but it means these searches are spent — add queries or new "
+              "cities in the client config (discovery.segments) to keep finding leads.")
 
     # --- Phase 2: scrape + extract every unique business concurrently. ---
     leads, skipped = [], 0

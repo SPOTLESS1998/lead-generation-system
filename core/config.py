@@ -71,6 +71,10 @@ DEFAULTS = {
         "max_workers": 3,                    # concurrent Composio calls (higher => more rate-limit hits)
         "maps_search_slug": "GOOGLE_MAPS_TEXT_SEARCH",
         "firecrawl_scrape_slug": "FIRECRAWL_SCRAPE",
+        "rotation": {                        # run a rolling SUBSET of the queries each day
+            "enabled": False,                # off by default — opt in per client
+            "queries_per_run": 4,            # 12 queries at 4/run covers everything every 3 days
+        },
     },
     "yellowpages": {                         # used only when lead_source == "yellowpages"
         "search_url_template": "https://www.yellowpages.com/search?search_terms={query}&geo_location_terms={location}",

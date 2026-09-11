@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote_plus
 
 from core import discovery
+from core import state
 from core.leads import FIELDS, _looks_like_email   # noqa: F401 (FIELDS documents the shape)
 from core.ai import generate_json
 
@@ -160,7 +161,7 @@ def _discover_from_query(cfg, spec, template, location, fc_slug, max_listings):
 # Orchestration — the public seam
 # --------------------------------------------------------------------------
 
-def load_leads(client_cfg):
+def load_leads(client_cfg, conn=None):
     """Discover leads via Yellow Pages -> Firecrawl -> AI, in parallel. Returns (leads, skipped).
 
     Phase 1 scrapes every configured YP results page concurrently and AI-extracts the
@@ -168,6 +169,10 @@ def load_leads(client_cfg):
     reusing core.discovery's enrichment verbatim. `skipped` counts businesses that could
     not become a usable lead (no site, scrape failed, or — when require_email is set — no
     email found), mirroring core/leads.py + core/discovery.py.
+
+    `conn` (optional): when supplied, businesses already on this client's lead list are
+    dropped BEFORE Phase 2, so a daily run does not re-scrape companies it already owns.
+    Same reasoning as core.discovery.load_leads — see the comment there.
     """
     yp = client_cfg.get("yellowpages") or {}
     template = yp.get("search_url_template") or DEFAULT_SEARCH_URL_TEMPLATE
@@ -214,6 +219,18 @@ def load_leads(client_cfg):
         seen.add(dkey)
         unique.append(biz)
     print(f"   🔎 {len(unique)} unique business(es) to enrich (from {len(businesses)} hits).")
+
+    # Skip businesses already on the lead list BEFORE the expensive per-site scrape,
+    # so a daily run stops re-buying companies it already owns. Same rule as
+    # core.discovery.load_leads; a no-op when no DB handle was supplied.
+    if conn is not None:
+        known = state.known_domains(conn, client_cfg["client"])
+        if known:
+            fresh = [b for b in unique if discovery._domain_key(b["website_url"]) not in known]
+            if len(fresh) != len(unique):
+                print(f"   💾 {len(unique) - len(fresh)} business(es) already on the lead "
+                      f"list — skipped without re-scraping.")
+            unique = fresh
 
     # --- Phase 2: scrape + extract every unique business — reused from discovery. ---
     leads, skipped = [], 0
