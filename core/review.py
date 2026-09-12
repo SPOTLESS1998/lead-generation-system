@@ -181,11 +181,29 @@ def _reply_body(cfg, lead_id, entry, dashboard):
 
 
 def notify_operator(cfg, lead_id, entry):
-    """Email the operator (their own inbox) the draft + approve/decline links."""
+    """Email the operator (their own inbox) the draft + approve/decline links.
+
+    Cold drafts are suppressed when notify.mode is "digest" (the default): a scheduled
+    run sends ONE summary via core/digest.py instead of an email per draft, because at
+    ~10 drafts/day a per-draft message buries the thing you actually need to see. Reply
+    approvals are always sent individually — a prospect has written back and that is
+    time-sensitive enough to deserve its own message.
+
+    The decision lives here rather than at each call site so a new caller cannot
+    accidentally spam the operator by forgetting to check the mode.
+    """
+    kind = entry.get("kind", "cold")
+    if kind == "cold":
+        try:
+            from . import digest
+            if digest.notify_mode(cfg) == "digest":
+                return None
+        except Exception:
+            pass   # a broken notify.mode must never block the draft from being queued
+
     smtp_user = os.environ["SMTP_USER"]
     smtp_pass = os.environ["SMTP_PASS"]
     dashboard = (cfg.get("unsubscribe_base_url") or "http://localhost:5001").rstrip("/")
-    kind = entry.get("kind", "cold")
     who = entry.get("company_name") or entry.get("target_email") or "prospect"
     subject = (f"[ACTION REQUIRED] Review reply to {who}" if kind == "reply"
                else f"[ACTION REQUIRED] Review pitch for {who}")

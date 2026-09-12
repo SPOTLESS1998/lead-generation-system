@@ -59,6 +59,19 @@ DEFAULTS = {
                                              # qualified lead is banked to the list either way,
                                              # and the surplus is drafted oldest-first later.
     },
+    "notify": {                              # how the operator hears about a scheduled run
+        "mode": "digest",                    # "digest" = ONE summary email per run (see
+                                             # core/digest.py) | "per_draft" = an email per
+                                             # draft, as a hand-run pipeline wants.
+                                             # Reply approvals are always sent individually.
+    },
+    "heartbeat": {                           # missed-run detection (see scripts/heartbeat.py)
+        "enabled": True,                     # alerts when no run has completed within max_age_hours
+        "max_age_hours": 26,                 # 26h = a daily job gets one missed morning before
+                                             # it is called late (allows for a late wake-up)
+        "alert_email": True,                 # email the operator; the VPS cron runs this so a
+                                             # dead LAPTOP still gets noticed
+    },
     "discovery": {                           # used only when lead_source == "maps_firecrawl"
         "queries": [],                       # flat Maps queries (fallback if no segments)
         "segments": [],                      # ICP segments: [{name, service, queries:[...]}, ...]

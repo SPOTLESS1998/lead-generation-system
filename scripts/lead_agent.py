@@ -475,9 +475,12 @@ def main(preview=False, limit=None):
     print_step(f"📇 [List] {sum(totals.values())} lead(s) on the list "
                f"{totals or '{}'}; drafting up to {max_drafts} this run.")
     if not pool:
-        print("\n   Nothing new to draft — every banked lead has already been drafted "
-              "or contacted. The list is still growing; add queries or wait for the "
-              "next rotation window.")
+        if sum(totals.values()) == 0:
+            print("\n   The lead list is empty — nothing has been sourced yet.")
+        else:
+            print("\n   Nothing new to draft — every banked lead has already been drafted "
+                  "or contacted. Add queries or new cities in the client config "
+                  "(discovery.segments) to keep finding leads.")
 
     drafted = 0
     for lead in pool:

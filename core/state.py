@@ -156,6 +156,19 @@ CREATE TABLE IF NOT EXISTS pipeline_events (
     created_at        TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS runs (
+    id          INTEGER PRIMARY KEY,
+    client      TEXT NOT NULL,
+    run_id      TEXT,
+    status      TEXT NOT NULL,        -- ok | failed
+    sourced     INTEGER NOT NULL DEFAULT 0,
+    drafted     INTEGER NOT NULL DEFAULT 0,
+    failed_steps TEXT,                -- JSON list of step names that failed
+    detail      TEXT,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS faults (
     id          INTEGER PRIMARY KEY,
     client      TEXT NOT NULL,
@@ -578,6 +591,48 @@ def get_magnet(conn, client, token):
 
 
 # --- pipeline events (observability ledger, see core/observability.py) ------
+
+# --- runs (heartbeat / missed-run detection) -------------------------------
+
+def record_run(conn, client, status, sourced=0, drafted=0, failed_steps=None,
+               detail=None, run_id=None, started_at=None):
+    """Record that a scheduled run finished, and how it went.
+
+    This table is what makes a MISSED run detectable. Every other signal in this
+    system is emitted BY a run — the ledger, faults, drafts — so if a run never
+    happens, nothing is written anywhere and silence is indistinguishable from health.
+    An explicit "I ran, at this time, with this outcome" row turns the absence of a
+    run into something a watcher can actually notice (see scripts/heartbeat.py).
+    """
+    now = _now()
+    conn.execute(
+        """INSERT INTO runs (client, run_id, status, sourced, drafted, failed_steps,
+                             detail, started_at, finished_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (client, run_id, status, int(sourced), int(drafted),
+         json.dumps(list(failed_steps or [])), detail, started_at or now, now),
+    )
+    conn.commit()
+
+
+def last_run(conn, client, status=None):
+    """The most recent run row (optionally filtered to a status), or None."""
+    sql = "SELECT * FROM runs WHERE client=?"
+    params = [client]
+    if status:
+        sql += " AND status=?"
+        params.append(status)
+    sql += " ORDER BY finished_at DESC, id DESC LIMIT 1"
+    return conn.execute(sql, params).fetchone()
+
+
+def recent_runs(conn, client, limit=14):
+    """The last N runs, newest first — for the dashboard and the heartbeat report."""
+    return conn.execute(
+        "SELECT * FROM runs WHERE client=? ORDER BY finished_at DESC, id DESC LIMIT ?",
+        (client, int(limit)),
+    ).fetchall()
+
 
 def record_event(conn, client, step, status, subject=None, run_id=None, attempt=1,
                  duration_ms=None, provider=None, prompt_tokens=0, completion_tokens=0,

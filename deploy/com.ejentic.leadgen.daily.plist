@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Daily lead-gen run — macOS launchd job.
+
+  INSTALL
+      cp deploy/com.ejentic.leadgen.daily.plist ~/Library/LaunchAgents/
+      launchctl load ~/Library/LaunchAgents/com.ejentic.leadgen.daily.plist
+
+  VERIFY / OPERATE
+      launchctl list | grep leadgen                     # is it registered?
+      launchctl kickstart -k gui/$(id -u)/com.ejentic.leadgen.daily   # run it NOW
+      tail -f logs/$(date +%Y-%m-%d).log                # watch a run
+      launchctl unload ~/Library/LaunchAgents/com.ejentic.leadgen.daily.plist   # stop it
+
+  WHY 08:07 AND NOT 08:00
+      Nothing here needs the top of the hour, and every scheduler in the world fires
+      at :00. An odd minute avoids contending with other cron/launchd jobs on this
+      machine for CPU and network.
+
+  MISSED RUNS
+      launchd runs a StartCalendarInterval job when the machine next wakes if it was
+      asleep at the scheduled time — so an overnight sleep is covered. It does NOT
+      fire if the machine is fully powered off through the window. That is exactly the
+      case scripts/heartbeat.py exists to catch, and why the heartbeat belongs on the
+      always-on box rather than here (see that script's docstring).
+
+  PATHS ARE ABSOLUTE ON PURPOSE
+      launchd starts jobs with a minimal environment and no shell profile: no PATH you
+      recognise, no venv, no cwd. Every path below is absolute, the venv python is
+      named directly rather than relying on activation, and CLIENT is set explicitly
+      instead of inheriting a default.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ejentic.leadgen.daily</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ejehrebecca/Antigravity/lead-generation-system/deploy/run_daily.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ejehrebecca/Antigravity/lead-generation-system</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CLIENT</key>
+        <string>ejentic</string>
+        <!-- Composio's CLI lives in the user's npm/homebrew paths, which launchd does
+             not provide. The wrapper script extends PATH further; this is the floor. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>8</integer>
+        <key>Minute</key>
+        <integer>7</integer>
+    </dict>
+
+    <!-- Never run on load: loading the job should not fire a real run. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- The wrapper handles per-day log files; these catch anything that escapes it
+         (an interpreter crash before logging starts, for instance). -->
+    <key>StandardOutPath</key>
+    <string>/Users/ejehrebecca/Antigravity/lead-generation-system/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ejehrebecca/Antigravity/lead-generation-system/logs/launchd.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

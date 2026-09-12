@@ -26,3 +26,4 @@ pending_leads.json.bak.*
 
 # --- OS noise ---
 .DS_Store
+logs/
