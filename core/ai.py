@@ -180,7 +180,12 @@ def _nvidia_chat(cfg, prompt, temperature=0.4, max_tokens=2000):  # 400 truncate
             "temperature": temperature,
             "max_tokens": max_tokens,
         },
-        timeout=(_CONNECT_TIMEOUT, 30),   # (connect, read)
+        timeout=(_CONNECT_TIMEOUT, 60),   # (connect, read). Was 30s, raised 2026-09-12:
+                                          # mistral-nemotron intermittently takes 45s+ to
+                                          # first byte (cold start). A 30s read timeout
+                                          # turned that into a failure, tripping the
+                                          # breaker on the only provider reachable from
+                                          # this network and costing a whole day's drafts.
     )
     if resp.status_code != 200:
         raise RuntimeError(f"NVIDIA API {resp.status_code}: {resp.text[:200]}")
@@ -336,6 +341,36 @@ _breaker_lock = threading.Lock()
 _breakers = {}               # provider -> {"fails": int, "open_until": monotonic secs}
 
 
+class AllProvidersCoolingDown(RuntimeError):
+    """Every provider is tripped, but only temporarily — waiting may fix this.
+
+    Distinct from "all providers failed", which means we actually called them and
+    they all broke. This one means we called NOTHING: the breakers were still in
+    their cooldown window. The difference matters for an unattended run, which can
+    afford to wait a minute and try again rather than write the day off.
+    """
+
+
+def cooldown_remaining(providers=None):
+    """Seconds until the first tripped provider can be retried (0.0 if any is ready).
+
+    Used by callers that want to wait out a breaker rather than fail. Returns the
+    MINIMUM across providers, because the chain only needs one of them back.
+    """
+    with _breaker_lock:
+        names = list(providers) if providers else list(_breakers.keys())
+        if not names:
+            return 0.0
+        now = time.monotonic()
+        waits = []
+        for p in names:
+            st = _breakers.get(p)
+            if not st or not st["open_until"]:
+                return 0.0          # this one is already callable
+            waits.append(max(0.0, st["open_until"] - now))
+        return min(waits) if waits else 0.0
+
+
 def reset_breakers():
     """Clear all circuit-breaker state (used at process start and by tests)."""
     with _breaker_lock:
@@ -415,7 +450,12 @@ def generate(cfg, prompt):
     if skipped_open and last_err is None:
         # Every eligible provider was tripped and skipped — fail fast (the whole point)
         # rather than force-calling known-dead providers; the next call half-opens them.
-        raise RuntimeError(
+        #
+        # Raised as a DISTINCT type because this failure is recoverable by waiting,
+        # unlike a real outage. An unattended once-daily run must be able to tell the
+        # two apart: see scripts/lead_agent.py, which waits out the cooldown once
+        # instead of burning the whole day's drafting on a 60-second blip.
+        raise AllProvidersCoolingDown(
             "All providers are in circuit-breaker cooldown "
             f"({', '.join(skipped_open)}); failing fast — retry after cooldown.")
     raise RuntimeError(f"All providers failed. Last error: {last_err}")

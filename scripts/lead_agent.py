@@ -9,6 +9,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import config, state, suppression, review, magnet, budget, quality, leads as leads_source
 from core import observability as obs
+from core import ai
 from core.ai import generate, generate_json
 
 # Safety valve: how many drafts to prepare in a single run (no point drafting more
@@ -16,6 +17,11 @@ from core.ai import generate, generate_json
 # This is the hard ceiling; a client can choose a LOWER everyday number via
 # `drafting.daily_cap` in its config (see draft_cap below).
 MAX_PER_RUN = 50
+
+# Longest we will pause to wait out a circuit-breaker cooldown before retrying a
+# lead. Bounded so an unattended run can never hang: the default cooldown is 60s,
+# so this leaves room for a configured-longer one without stalling the morning job.
+MAX_COOLDOWN_WAIT = 180.0
 
 
 def draft_cap(cfg, preview_limit=None):
@@ -514,6 +520,28 @@ def main(preview=False, limit=None):
                 # copy → quality gate, metered as a single 'draft' ledger step.
                 subject, body, provider, magnet_url, magnet_token = draft_one_lead(
                     conn, cfg, lead, run_id)
+            except ai.AllProvidersCoolingDown as e:
+                # Nothing was actually called — every provider was still inside its
+                # circuit-breaker cooldown. That is a recoverable, usually-brief state
+                # (a gateway restart, one slow upstream), NOT an outage.
+                #
+                # This matters because the drafting phase runs at the END of a long
+                # discovery pass, so a blip during discovery can leave every breaker
+                # open exactly when drafting starts. Without this wait, a 60-second
+                # hiccup silently cost a once-daily run its ENTIRE day of drafting:
+                # every lead in the pool hit the same open breaker and was released.
+                wait = min(ai.cooldown_remaining() + 2.0, MAX_COOLDOWN_WAIT)
+                print(f"   ⏳ All providers cooling down ({e}). "
+                      f"Waiting {wait:.0f}s and retrying this lead once...")
+                time.sleep(wait)
+                try:
+                    subject, body, provider, magnet_url, magnet_token = draft_one_lead(
+                        conn, cfg, lead, run_id)
+                except Exception as e2:
+                    print(f"   ❌ Still failing after the cooldown for "
+                          f"{lead['company_name']}: {e2}. Releasing the claim.")
+                    state.set_status(conn, cfg["client"], lead["email"], state.SOURCED)
+                    continue
             except Exception as e:
                 print(f"   ❌ Generation failed for {lead['company_name']}: {e}. "
                       f"Releasing the claim so this lead retries on the next run.")

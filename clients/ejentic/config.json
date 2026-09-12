@@ -144,5 +144,10 @@
     "real estate agencies abuja",
     "e-commerce fashion stores nigeria"
   ],
-  "website_url": "https://ejentic.xyz"
+  "website_url": "https://ejentic.xyz",
+  "providers": [
+    "freellmapi",
+    "nvidia",
+    "gemini"
+  ]
 }
