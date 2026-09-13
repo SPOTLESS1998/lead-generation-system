@@ -314,7 +314,61 @@ def _clean_email(raw):
     e = (raw or "").strip()
     if e.lower().startswith("mailto:"):
         e = e[len("mailto:"):]
-    return e.strip().strip("<>").strip().rstrip(".,;:>)")
+    e = e.strip().strip("<>").strip().rstrip(".,;:>)")
+    # A trailing dot is legal in DNS but a scrape artifact more often than intent
+    # ("a@b.com." from end-of-sentence punctuation). Strip it so the domain compares
+    # cleanly against reserved-domain lists — otherwise a placeholder sneaks past as
+    # "example.com." and still hard-bounces.
+    return e[:-1] if e.endswith(".") else e
+
+
+# Domains that can never receive mail: RFC 2606 / RFC 6761 reserve them so examples
+# and docs can't accidentally hit a real inbox. A scraper will happily hand one back —
+# on 2026-09-13 "JMJ PROPERTIES" was banked as contact@example.com, an address that is
+# guaranteed to hard-bounce.
+#
+# This matters more than a tidiness issue: cold outreach lives or dies on sender
+# reputation, and a bounce rate above a few percent gets a domain throttled or
+# blocklisted by the receiving providers. One placeholder address is a small leak, but
+# nothing downstream can fix it — by the time it reaches the sender the damage is the
+# bounce — so it has to be refused at the door, where the address is first read.
+_PLACEHOLDER_DOMAINS = (
+    "example.com", "example.org", "example.net", "example.edu",
+    "test.com", "test.org", "test.net",
+    "invalid", "localhost", "domain.com", "email.com",
+    "yourdomain.com", "yourcompany.com", "sentry.io", "wixpress.com",
+)
+
+
+def _is_placeholder_email(e):
+    """True if `e` is a PRESENT address that can never receive mail.
+
+    Absent/blank is deliberately NOT placeholder — that distinction is load-bearing.
+    A business with no public email is a legitimate lead when require_email=False
+    (it stays on the list for enrichment later), and the existing require_email gate
+    already decides what to do with it. Folding "no email" in here would silently
+    drop those businesses, which is exactly the regression this docstring prevents.
+
+    Beyond that, deliberately narrow: a handful of reserved/boilerplate domains plus
+    the obvious malformed cases. A broader "looks fake" heuristic would start
+    rejecting real small-business addresses, and a missed lead is invisible while a
+    bounce is not.
+    """
+    if e is None or not str(e).strip():
+        return False                                 # absent, not fake
+    e = str(e).strip()
+    if "@" not in e:
+        return True
+    local, _, domain = e.rpartition("@")
+    if not local.strip():
+        return True                                  # "@host.com" has no recipient
+    domain = domain.strip().lower().strip(".")       # "a@b.com." -> "b.com"
+    if not domain or "." not in domain:
+        return True                                  # no TLD: cannot resolve
+    if domain in _PLACEHOLDER_DOMAINS:
+        return True
+    # Subdomains of a reserved domain (e.g. mail.example.com) are equally unroutable.
+    return any(domain.endswith("." + d) for d in _PLACEHOLDER_DOMAINS)
 
 
 def _coerce_str(val):
@@ -375,6 +429,17 @@ def _extract_lead(cfg, business, markdown):
         return None
 
     email = _clean_email(obj.get("email"))
+    # Refuse a PRESENT placeholder address (example.com and friends) BEFORE the lead is
+    # built. They pass every syntactic check but can only ever hard-bounce, and a bounce
+    # costs sender reputation that cold outreach cannot afford. Dropping the lead here
+    # loses one row; banking it risks the sending domain. See _is_placeholder_email.
+    #
+    # An ABSENT email falls through to the require_email gate below, which owns that
+    # decision — businesses with no public email are kept when require_email=False.
+    if _is_placeholder_email(email):
+        print(f"   ⏭️  {business['company_name'][:52]}: placeholder/unroutable "
+              f"email ({email}); skipping.")
+        return None
     lead = {
         "first_name": _coerce_str(obj.get("first_name")),
         "last_name": _coerce_str(obj.get("last_name")),

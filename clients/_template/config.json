@@ -31,6 +31,7 @@
   },
 
   "copy_provider": "gemini",
+  "providers": ["freellmapi", "gemini", "nvidia"],
   "gemini_model": "gemini-2.5-flash",
   "nvidia_model": "mistralai/mistral-nemotron",
   "freellmapi_model": null,

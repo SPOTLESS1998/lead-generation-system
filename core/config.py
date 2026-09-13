@@ -245,6 +245,25 @@ def load_client(name=None):
         _resolve_mailbox(m, name) for m in cfg["sending"].get("mailboxes", [])
     ]
     cfg["sending"]["controlled_inbox"] = _resolve_controlled_inbox(cfg)
+
+    # Provider order is a DEPLOYMENT concern, not a business fact: the same client
+    # code runs on a laptop and on a VPS, and a provider reachable from one may be
+    # unreachable from the other. Concretely (2026-09-13): the freellmapi gateway is
+    # Mac-local, so on the VPS every call wasted ~60s failing through freellmapi and a
+    # stalling NVIDIA before reaching Gemini, which is the one that works there.
+    # LEADGEN_PROVIDERS="gemini,nvidia" reorders the chain without touching config.json
+    # or adding a machine name to tracked code. Unset = the config's own order.
+    override = _env("LEADGEN_PROVIDERS")
+    if override:
+        seq = [p.strip() for p in override.split(",") if p.strip()]
+        known = {"freellmapi", "gemini", "nvidia", "anthropic"}
+        unknown = [p for p in seq if p not in known]
+        if unknown:
+            _warn(f"LEADGEN_PROVIDERS names unknown provider(s) {unknown}; ignoring those.")
+        seq = [p for p in seq if p in known]
+        if seq:
+            cfg["providers"] = seq
+
     _validate(cfg)
     _announce_tenant(cfg)
     return cfg
