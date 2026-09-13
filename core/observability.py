@@ -124,6 +124,15 @@ class track:
             ev.status = "error"
             ev.error = f"{exc_type.__name__}: {exc}"[:500]
         cost = compute_cost(ev.cfg, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+        # WHICH model(s) this step's tokens went to, recorded in the existing meta blob.
+        # The provider column says "freellmapi"; that gateway rotates across a pinned
+        # list, so the provider alone can never tell you what a step cost. This can hold
+        # more than one entry when a step failed over mid-way — each is kept with its own
+        # token counts so each prices at its own rate. Absent (a provider that reports no
+        # model) means the cost is unknown, which is NOT the same as free.
+        meta = dict(ev._meta)
+        if usage.get("models"):
+            meta["models"] = usage["models"]
         try:
             state.record_event(
                 ev.conn, ev.client, ev.step, ev.status,
@@ -132,7 +141,7 @@ class track:
                 prompt_tokens=usage.get("prompt_tokens", 0),
                 completion_tokens=usage.get("completion_tokens", 0),
                 cost_usd=cost, error=ev.error,
-                meta=ev._meta or None,
+                meta=meta or None,
             )
         except Exception as e:  # observability must never break the pipeline
             print(f"⚠️  observability: failed to record '{ev.step}' event ({e})")

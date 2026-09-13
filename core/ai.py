@@ -38,8 +38,12 @@ _local = threading.local()
 
 
 def _zero_usage():
+    # "models" is a LIST, not a single field, because the freellmapi gateway rotates
+    # models across attempts (see _freellmapi_chat) — so ONE tracked step can spend
+    # tokens on two different models. Keeping the per-model split lets each be priced
+    # at its own rate later; collapsing it to one name would force a guess.
     return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-            "calls": 0, "provider": None}
+            "calls": 0, "provider": None, "models": []}
 
 
 def _usage_store():
@@ -71,15 +75,28 @@ def _accumulate(provider, usage):
     u["total_tokens"] += tt
     u["calls"] += 1
     u["provider"] = provider   # the provider that actually answered
+    # Which MODEL answered, if the provider reported one. A provider that doesn't say
+    # (or a gateway left to auto-route) contributes nothing here rather than a guess —
+    # downstream that reads as "cost unknown", never as "cost zero".
+    model = (usage or {}).get("model")
+    if model:
+        u["models"].append({"model": model, "prompt_tokens": pt, "completion_tokens": ct})
 
 
-def _norm_usage(u):
-    """Normalize an OpenAI-style usage dict to our three token keys."""
+def _norm_usage(u, model=None):
+    """Normalize an OpenAI-style usage dict to our three token keys (+ the model).
+
+    `model` is the model this call actually ran on, so spend can be priced later. It is
+    optional and defaults to None: a provider stub that returns only token counts (the
+    tests do exactly this) still normalizes cleanly, and an unreported model stays an
+    honest unknown instead of being attributed to whatever was configured.
+    """
     u = u or {}
     return {
         "prompt_tokens": int(u.get("prompt_tokens") or 0),
         "completion_tokens": int(u.get("completion_tokens") or 0),
         "total_tokens": int(u.get("total_tokens") or 0),
+        "model": u.get("model") or model,
     }
 
 
@@ -139,7 +156,11 @@ def _freellmapi_chat(cfg, prompt, temperature=0.4, max_tokens=2000):
             content = (data["choices"][0]["message"].get("content") or "").strip()
             if not content:
                 raise RuntimeError("FreeLLMAPI returned empty content")
-            return content, _norm_usage(data.get("usage"))
+            # Report WHICH model answered. Prefer the gateway's own echo over what we
+            # asked for (it may route elsewhere); when we sent no model and it echoes
+            # none, this stays None — an honest "unknown", not a guess.
+            return content, _norm_usage(data.get("usage"),
+                                        model=data.get("model") or body.get("model"))
         except Exception as e:
             last_err = e
             if i < attempts - 1:
@@ -164,6 +185,7 @@ def _gemini_chat(cfg, prompt):
         "completion_tokens": int(getattr(um, "candidates_token_count", 0) or 0),
         "total_tokens": int(getattr(um, "total_token_count", 0) or 0),
     } if um is not None else {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    usage["model"] = cfg["gemini_model"]   # this provider always knows its model
     return text, usage
 
 
@@ -190,7 +212,8 @@ def _nvidia_chat(cfg, prompt, temperature=0.4, max_tokens=2000):  # 400 truncate
     if resp.status_code != 200:
         raise RuntimeError(f"NVIDIA API {resp.status_code}: {resp.text[:200]}")
     data = resp.json()
-    return data["choices"][0]["message"]["content"].strip(), _norm_usage(data.get("usage"))
+    return data["choices"][0]["message"]["content"].strip(), \
+        _norm_usage(data.get("usage"), model=data.get("model") or cfg["nvidia_model"])
 
 
 _ANTHROPIC_ATTEMPTS = 2          # total tries against a possibly-throttling endpoint
@@ -277,7 +300,9 @@ def _anthropic_chat(cfg, prompt, temperature=0.5, max_tokens=16000):  # big head
             if text:
                 u = data.get("usage") or {}
                 it, ot = int(u.get("input_tokens") or 0), int(u.get("output_tokens") or 0)
-                return text, {"prompt_tokens": it, "completion_tokens": ot, "total_tokens": it + ot}
+                return text, {"prompt_tokens": it, "completion_tokens": ot,
+                              "total_tokens": it + ot,
+                              "model": data.get("model") or model}
             # 200 but no text. Two causes: a proxy throttling tell, OR forced thinking ate
             # the whole max_tokens budget (stop_reason 'max_tokens', a thinking block but no
             # text) — the headroom above is what prevents the latter. Retry, then fail over.
