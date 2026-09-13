@@ -161,10 +161,87 @@ def test_recovery_closes_the_breaker():
         ai.reset_breakers()
 
 
+def test_gemini_model_rotation():
+    """A per-model quota (429) must fail over to the next model, not fail the call.
+
+    Google's free tier meters PER MODEL: "limit: 20, model: gemini-2.5-flash". On
+    2026-09-13 that cap stopped an autonomous run dead — extraction alone spent the
+    whole 20 and every later call got 429, so nothing was drafted. Listing several
+    models multiplies the daily allowance, but only if a 429 on one actually advances
+    to the next.
+    """
+    print("\n[gemini: a 429 on one model advances to the next]")
+    real_generate = None
+    calls = []
+
+    class _Resp:
+        def __init__(self, text):
+            self.text = text
+            self.usage_metadata = None
+
+    class _Models:
+        def generate_content(self, model, contents):
+            calls.append(model)
+            if model == "exhausted-model":
+                raise RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded")
+            if model == "retired-model":
+                raise RuntimeError("404 NOT_FOUND: model not found")
+            return _Resp(f"answer from {model}")
+
+    class _Client:
+        def __init__(self, api_key=None):
+            self.models = _Models()
+
+    # Patch the genai module the provider imports lazily inside the function.
+    import types
+    fake_genai = types.ModuleType("google.genai")
+    fake_genai.Client = _Client
+    fake_google = types.ModuleType("google")
+    fake_google.genai = fake_genai
+
+    saved = {k: sys.modules.get(k) for k in ("google", "google.genai")}
+    sys.modules["google"] = fake_google
+    sys.modules["google.genai"] = fake_genai
+    saved_key = os.environ.get("GEMINI_API_KEY")
+    os.environ["GEMINI_API_KEY"] = "test-key"
+    try:
+        text, usage = ai._gemini_chat(
+            {"gemini_model": ["exhausted-model", "retired-model", "good-model"]},
+            "prompt")
+        check("rotation reached the first WORKING model", text == "answer from good-model")
+        check("it tried the models in order", calls == ["exhausted-model", "retired-model", "good-model"])
+        check("usage names the model that ACTUALLY answered",
+              usage.get("model") == "good-model")
+
+        # A single string must keep working exactly as before (no regression).
+        calls.clear()
+        text2, usage2 = ai._gemini_chat({"gemini_model": "good-model"}, "prompt")
+        check("a single-string model still works", text2 == "answer from good-model")
+        check("...and reports its model", usage2.get("model") == "good-model")
+
+        # All models exhausted -> raise, so the provider chain can move on.
+        calls.clear()
+        try:
+            ai._gemini_chat({"gemini_model": ["exhausted-model"]}, "prompt")
+            check("an all-exhausted list raises", False)
+        except RuntimeError as e:
+            check("an all-exhausted list raises", "Gemini model" in str(e))
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+        if saved_key is None:
+            os.environ.pop("GEMINI_API_KEY", None)
+        else:
+            os.environ["GEMINI_API_KEY"] = saved_key
+
+
 test_cooling_down_is_its_own_error_type()
 test_cooldown_remaining_reports_the_wait()
 test_a_real_outage_still_fails_normally()
 test_recovery_closes_the_breaker()
-
+test_gemini_model_rotation()
 print(f"\n{'='*50}\n  RESULT: {PASS} passed, {FAIL} failed\n{'='*50}")
 sys.exit(1 if FAIL else 0)

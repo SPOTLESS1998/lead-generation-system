@@ -174,19 +174,49 @@ def _gemini_chat(cfg, prompt):
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY not set")
     client = genai.Client(api_key=api_key)
-    resp = client.models.generate_content(model=cfg["gemini_model"], contents=prompt)
-    text = (getattr(resp, "text", None) or "").strip()
-    if not text:
-        raise RuntimeError("Gemini returned empty text")
-    # Gemini reports tokens on resp.usage_metadata (different key names than OpenAI).
-    um = getattr(resp, "usage_metadata", None)
-    usage = {
-        "prompt_tokens": int(getattr(um, "prompt_token_count", 0) or 0),
-        "completion_tokens": int(getattr(um, "candidates_token_count", 0) or 0),
-        "total_tokens": int(getattr(um, "total_token_count", 0) or 0),
-    } if um is not None else {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    usage["model"] = cfg["gemini_model"]   # this provider always knows its model
-    return text, usage
+
+    # Model ROTATION, mirroring _freellmapi_chat's pinned-model list above. Google's
+    # free tier meters per-model ("limit: 20, model: gemini-2.5-flash"), so a run that
+    # exhausts gemini-2.5-flash can keep working on a different model instead of
+    # failing the whole call. On 2026-09-13 that exact 20/day cap was what stopped an
+    # autonomous run dead: extraction alone spent the entire allowance, and every later
+    # call — strategy, copy, quality — got 429 and drafted nothing.
+    #
+    # `gemini_model` may be a single string (unchanged behaviour) or a LIST, tried in
+    # order within one call so a 429 fails over to the next model immediately.
+    configured = cfg.get("gemini_model")
+    if isinstance(configured, (list, tuple)):
+        models = [m.strip() for m in configured if isinstance(m, str) and m.strip()]
+    else:
+        models = [configured] if configured else []
+    if not models:
+        raise RuntimeError("no gemini_model configured")
+
+    last_err = None
+    for model in models:
+        try:
+            resp = client.models.generate_content(model=model, contents=prompt)
+        except Exception as e:
+            last_err = e
+            # Try the next model on ANY failure. The expensive case this guards is a
+            # per-model quota exhaustion (429), but a retired model id (404) and a
+            # transient 5xx deserve the same treatment, and there is nothing to lose:
+            # the alternative is failing the call outright.
+            continue
+        text = (getattr(resp, "text", None) or "").strip()
+        if not text:
+            last_err = RuntimeError(f"Gemini ({model}) returned empty text")
+            continue
+        # Gemini reports tokens on resp.usage_metadata (different key names than OpenAI).
+        um = getattr(resp, "usage_metadata", None)
+        usage = {
+            "prompt_tokens": int(getattr(um, "prompt_token_count", 0) or 0),
+            "completion_tokens": int(getattr(um, "candidates_token_count", 0) or 0),
+            "total_tokens": int(getattr(um, "total_token_count", 0) or 0),
+        } if um is not None else {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        usage["model"] = model          # the model that ACTUALLY answered, not the first
+        return text, usage
+    raise RuntimeError(f"all {len(models)} Gemini model(s) failed. Last error: {last_err}")
 
 
 def _nvidia_chat(cfg, prompt, temperature=0.4, max_tokens=2000):  # 400 truncated full-email JSON

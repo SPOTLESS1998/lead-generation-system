@@ -11,7 +11,12 @@
     "Enterprise Workflow Automation"
   ],
   "copy_provider": "gemini",
-  "gemini_model": "gemini-2.5-flash",
+  "gemini_model": [
+    "gemini-flash-latest",
+    "gemini-2.5-flash",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite"
+  ],
   "nvidia_model": "mistralai/mistral-nemotron",
   "freellmapi_model": [
     "openai/gpt-oss-120b",
