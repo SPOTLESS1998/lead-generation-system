@@ -15,6 +15,7 @@ share exactly one code path.
 
 import os
 import json
+import re
 import time
 import threading
 
@@ -26,6 +27,32 @@ import requests
 # (connect, read) timeout tuple: a dead/refused host trips the short connect
 # timeout instead of burning the full read timeout on every call.
 _CONNECT_TIMEOUT = 5   # seconds allowed to establish the TCP connection
+
+# Longest we will pause for a provider's own rate-limit hint before moving on. Bounded
+# so a pathological "retry in 3600s" cannot stall an unattended run for an hour; past
+# this the chain is better off trying a different provider than waiting.
+_MAX_RATE_LIMIT_WAIT = 30.0
+
+
+def _rate_limit_delay(msg, default=0.0):
+    """Seconds a provider asked us to wait, parsed from a 429 message.
+
+    Google includes a machine-readable hint in its 429 body — both a `retryDelay`
+    field ("5.72438895s") and prose ("Please retry in 19.8s"). We parse rather than
+    guess because the right pause depends on which limit was hit (per-minute limits
+    clear in seconds; a per-day cap never will, and the chain should move on).
+
+    Returns `default` (0.0) when no hint is present, so callers keep immediate-failover
+    behaviour for limits that waiting cannot fix.
+    """
+    for pattern in (r'"retryDelay"\s*:\s*"([0-9.]+)s"', r"retry in ([0-9.]+)s"):
+        m = re.search(pattern, msg or "")
+        if m:
+            try:
+                return max(0.0, float(m.group(1)))
+            except ValueError:
+                pass
+    return default
 
 
 # --- per-thread token accounting -------------------------------------------
@@ -198,10 +225,19 @@ def _gemini_chat(cfg, prompt):
             resp = client.models.generate_content(model=model, contents=prompt)
         except Exception as e:
             last_err = e
-            # Try the next model on ANY failure. The expensive case this guards is a
-            # per-model quota exhaustion (429), but a retired model id (404) and a
-            # transient 5xx deserve the same treatment, and there is nothing to lose:
-            # the alternative is failing the call outright.
+            msg = str(e)
+            # A 429 is a RATE limit, not a broken model, and the two behave differently:
+            #   - Per-DAY cap -> a DIFFERENT model has its own allowance, so rotating helps.
+            #   - Per-MINUTE cap -> every model is throttled on the same clock, so rotating
+            #     through the whole list just burns the allowance faster. What's needed is
+            #     to WAIT. (Seen live 2026-09-13: "GenerateRequestsPerMinute... value: 15".)
+            # Google tells us how long to wait; honor it, bounded, so an unattended run
+            # paces itself instead of hammering. Only on a rate limit — an ordinary error
+            # (404 retired model, 5xx) should advance immediately.
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                wait = _rate_limit_delay(msg)
+                if wait > 0:
+                    time.sleep(min(wait, _MAX_RATE_LIMIT_WAIT))
             continue
         text = (getattr(resp, "text", None) or "").strip()
         if not text:

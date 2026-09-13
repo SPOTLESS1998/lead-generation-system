@@ -238,10 +238,43 @@ def test_gemini_model_rotation():
             os.environ["GEMINI_API_KEY"] = saved_key
 
 
+def test_rate_limit_delay_parsing():
+    """A 429's own retry hint must be read, because rotating models cannot fix a clock.
+
+    Seen live 2026-09-13 on the VPS: Gemini returned
+    "GenerateRequestsPerMinute... value: 15" — a PER-MINUTE limit. Rotating through four
+    models did not help (all four throttle on the same minute) and burned the allowance
+    faster. Waiting is the only thing that works, and the API says exactly how long.
+    """
+    print("\n[429 retry hints are parsed from both shapes Google uses]")
+    cases = [
+        ('{"retryDelay": "5.72438895s"}', 5.72438895),
+        ("Please retry in 19.8s.", 19.8),
+        ('{"error":{"details":[{"retryDelay":"3s"}]}}', 3.0),
+        ("retry in 0.5s", 0.5),
+    ]
+    for msg, want in cases:
+        got = ai._rate_limit_delay(msg)
+        check(f"parses {msg[:38]!r} -> {want}s", abs(got - want) < 0.01)
+
+    print("\n[a hint we cannot honour falls back to immediate failover, not a guessed wait]")
+    for msg in ("You exceeded your current quota", "", "429 no hint here", None):
+        check(f"{msg!r} -> 0.0 (fail over now)", ai._rate_limit_delay(msg) == 0.0)
+
+    print("\n[the wait is bounded so an unattended run cannot hang]")
+    check("the cap is a sane number of seconds",
+          0 < ai._MAX_RATE_LIMIT_WAIT <= 120)
+    huge = ai._rate_limit_delay('{"retryDelay": "3600s"}')
+    check("a 1-hour hint is parsed", huge == 3600.0)
+    check("...but the caller clamps it to the cap",
+          min(huge, ai._MAX_RATE_LIMIT_WAIT) == ai._MAX_RATE_LIMIT_WAIT)
+
+
 test_cooling_down_is_its_own_error_type()
 test_cooldown_remaining_reports_the_wait()
 test_a_real_outage_still_fails_normally()
 test_recovery_closes_the_breaker()
 test_gemini_model_rotation()
+test_rate_limit_delay_parsing()
 print(f"\n{'='*50}\n  RESULT: {PASS} passed, {FAIL} failed\n{'='*50}")
 sys.exit(1 if FAIL else 0)
