@@ -42,13 +42,26 @@ MAX_PER_RUN = 50
 
 def _draft_lead_view(row):
     """Rebuild the lead dict shape the drafting recipe expects from a stored leads
-    row. Coerce NULLs; prefer the persisted grounding facts, falling back to the
-    company name for old rows / blank name on role mailboxes."""
+    row. Coerce NULLs; carry the persisted grounding facts through UNCHANGED.
+
+    Does NOT fall back to the company name for `company_facts`. That fallback was a
+    real bug: with NULL facts it handed the model the company NAME positioned as
+    researched evidence, and the model — asked for a specific bottleneck and given
+    something that looked like a fact — produced plausible invented detail instead of
+    declining. Five live drafts cited things our data has never contained ("spanning
+    six continents", "top Nigerian brands like MTN and Sterling Bank", "powered over
+    1,200 Nigerian merchants"). Those may even be true, which is what makes them
+    dangerous: they read as researched, cite nothing checkable, and there is no way to
+    verify them before they reach a stranger's inbox.
+
+    The intent behind the old fallback was reasonable — let pre-facts rows still draft —
+    but the outcome was fabrication, so the gate now lives in main(): a lead with no
+    grounding is skipped with a loud count instead of drafted on a guess.
+    """
     first = (row["first_name"] or "").strip()
     company = row["company_name"] or ""
-    # Prefer the real scraped facts saved at discovery time; fall back to the
-    # one-line description, then to the (often descriptive) company name so rows
-    # saved before facts existed — and role mailboxes — still draft with signal.
+    # Carried verbatim. Empty means "we know nothing" and is reported as such, rather
+    # than being quietly replaced by something that reads like knowledge.
     facts = (row["company_facts"] or "").strip()
     desc = (row["company_description"] or "").strip()
     return {
@@ -63,8 +76,18 @@ def _draft_lead_view(row):
         "last_name": (row["last_name"] or "").strip(),
         "title": (row["title"] or "").strip(),
         "company_name": company,
-        "company_description": desc or company,
-        "company_facts": facts or desc or company,
+        # NEITHER field falls back to the company name — not even the description.
+        # That looks harmless but is a BACKDOOR: lead_agent.py and core/quality.py all
+        # coalesce `company_facts or company_description` (lines 130/176/248 and
+        # 176/220 respectively), so a name placed in the description slot would be read
+        # straight back out as facts and the fabrication would return by another route.
+        # Empty is the honest value for "we scraped nothing".
+        "company_description": desc,
+        "company_facts": facts or desc,
+        # Explicit signal for the gate in main(). Kept as its own key rather than inferred
+        # from truthiness at the call site so the rule is stated once, here, next to the
+        # data it judges.
+        "has_grounding": bool(facts or desc),
         "ejentic_service": row["niche"] or "",
     }
 
@@ -102,7 +125,7 @@ def main():
         print("\n✅ Nothing to draft — every queued lead already has a pending draft.")
         return
 
-    drafted = failed = 0
+    drafted = failed = ungrounded = 0
     for row in todo:
         if drafted >= MAX_PER_RUN:
             print(f"\n⏹️  Reached MAX_PER_RUN ({MAX_PER_RUN}); stopping.")
@@ -118,6 +141,25 @@ def main():
             continue
 
         lead = _draft_lead_view(row)
+
+        # GROUNDING GATE. No facts and no description means we know nothing specific
+        # about this business, and a cold email that claims specifics it cannot support
+        # is worse than no email: it is unverifiable by us, it damages the sending
+        # domain if wrong, and it is the one failure this pipeline cannot detect after
+        # the fact. So we do not draft it — we count it and say so.
+        #
+        # The lead KEEPS its status. It stays 'sourced', which already means "banked,
+        # never contacted" and is deliberately excluded from CONTACTED_STATES (see
+        # core/state.py), so it is picked up automatically once enrichment fills its
+        # facts in. No new status is needed: this is missing data, not a new stage in
+        # the lead's life, and inventing one would mean auditing every place that
+        # enumerates states for no behavioural gain.
+        if not lead["has_grounding"]:
+            ungrounded += 1
+            print(f"   ⏭️  Skipping {row['email']} — no grounding facts "
+                  f"(nothing scraped to cite); staying '{state.SOURCED}' for enrichment.")
+            continue
+
         try:
             # The ONE shared drafting recipe (scripts/lead_agent.draft_one_lead):
             # fit the offering → strategy → build the personalized magnet page →
@@ -143,8 +185,16 @@ def main():
         review.notify_operator(cfg, lead_id, entry)
         drafted += 1
 
-    print(f"\n🎉 Done. Drafted {drafted} pitch(es), {failed} failed (left queued) "
+    print(f"\n🎉 Done. Drafted {drafted} pitch(es), {failed} failed "
+          f"(left '{state.SOURCED}'), {ungrounded} skipped for no grounding facts "
           f"— awaiting your approval at {cfg.get('unsubscribe_base_url')}.")
+    if ungrounded:
+        # Loud and counted, not a whisper: an ungrounded lead is a DISCOVERY gap that
+        # will silently cap how many pitches this pipeline can ever produce, so it
+        # belongs in front of the operator rather than buried in the per-lead lines.
+        print(f"⚠️  {ungrounded} lead(s) skipped: no grounding facts. They were scraped "
+              f"without facts/description and cannot be drafted honestly until enriched. "
+              f"Check the discovery extractor for these rows rather than hand-writing facts.")
 
 
 if __name__ == "__main__":

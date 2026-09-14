@@ -311,24 +311,132 @@ def _row(**kw):
 
 
 def test_draft_lead_view_reads_facts():
-    print("\n[_draft_lead_view: persisted facts preferred, company-name fallback kept]")
+    print("\n[_draft_lead_view: persisted facts preferred, NO company-name fabrication]")
     v = draft_queued._draft_lead_view(_row(
         company_name="Acme", company_description="sells solar",
         company_facts="Services: solar. Notable: serves Maitama landlords."))
     check("uses persisted company_facts verbatim",
           v["company_facts"] == "Services: solar. Notable: serves Maitama landlords.")
     check("uses persisted company_description verbatim", v["company_description"] == "sells solar")
+    check("a grounded lead is flagged as grounded", v["has_grounding"] is True)
 
     v2 = draft_queued._draft_lead_view(_row(company_name="Acme", company_description="sells solar"))
     check("facts fall back to the description when facts are NULL", v2["company_facts"] == "sells solar")
+    check("description-only still counts as grounding", v2["has_grounding"] is True)
 
+    # THE REGRESSION THIS FILE NOW PINS. This assertion used to read
+    #   check("facts fall back to the company name when both are NULL", v3["company_facts"] == "Acme")
+    # — i.e. the suite ENCODED the bug. Handing the model the company name in the facts
+    # slot is what produced five live drafts citing things our data never contained
+    # ("spanning six continents", "brands like MTN and Sterling Bank", "1,200 merchants").
     v3 = draft_queued._draft_lead_view(_row(company_name="Acme"))
-    check("facts fall back to the company name when both are NULL", v3["company_facts"] == "Acme")
-    check("description falls back to the company name too", v3["company_description"] == "Acme")
+    check("facts do NOT fall back to the company name (that fabricated grounding)",
+          v3["company_facts"] == "")
+    check("an ungrounded lead is flagged as such", v3["has_grounding"] is False)
+    check("company name is still carried as the name", v3["company_name"] == "Acme")
+
+    # THE BACKDOOR. lead_agent.py and core/quality.py coalesce
+    # `company_facts or company_description`, so putting the name in the DESCRIPTION
+    # slot would read straight back out as facts and reopen the same fabrication by a
+    # different route. Both slots must be empty when nothing was scraped.
+    check("description does NOT fall back to the company name either (closes the backdoor)",
+          v3["company_description"] == "")
+    check("...so the facts/description coalescing still yields nothing",
+          (v3["company_facts"] or v3["company_description"] or "") == "")
     # A blank name stays blank here on purpose: generate_copy tells the model the name
     # is unknown and copy_instructions supplies the "Hi there," rule. Substituting the
     # literal "there" as their NAME is what confused the model into leaking reasoning.
     check("blank first name is left blank, not faked as 'there'", v3["first_name"] == "")
+
+    # Whitespace-only must count as ABSENT, not as grounding. Scrapers emit " " and "\n"
+    # for empty fields, and treating those as facts would reopen the same hole.
+    for blank in ("", "   ", "\n", None):
+        vb = draft_queued._draft_lead_view(_row(company_name="Acme", company_facts=blank,
+                                                 company_description=blank))
+        check(f"whitespace-only grounding {blank!r} does NOT count as grounded",
+              vb["has_grounding"] is False)
+
+
+def test_ungrounded_leads_are_not_drafted():
+    """The GATE itself, driven through main() with every external seam stubbed.
+
+    _draft_lead_view returning has_grounding=False is not enough — the guard has to be
+    WIRED INTO the loop. A correct flag that nothing consults looks identical to a fixed
+    system, which is exactly the trap the placeholder-email guard fell into.
+    """
+    print("\n[main(): an ungrounded lead is SKIPPED, a grounded one is DRAFTED]")
+    import tempfile
+    from core import state as _state
+
+    tmp = tempfile.mkdtemp()
+    db = os.path.join(tmp, "state.sqlite")
+    conn = _state.connect(db)
+
+    # Two banked leads: one scraped with real facts, one with nothing.
+    for email, name, facts in (("grounded@acme.ng", "Acme Ltd", "Services: solar. Notable: Maitama."),
+                               ("blank@acme.ng", "Blank Ltd", None)):
+        conn.execute(
+            "INSERT INTO leads (client, email, company_name, company_facts, status, created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            ("ejentic", email, name, facts, _state.SOURCED, "2026-01-01T00:00:00+00:00"))
+    conn.commit()
+
+    drafted_emails = []
+
+    def fake_draft_one_lead(conn_, cfg_, lead, run_id):
+        drafted_emails.append(lead["email"])
+        return ("Subj", "Hi there,\n\nBody.\n\nBest,\nEjentic AI", "fake", None, None)
+
+    # Stub every seam main() touches so nothing leaves the machine.
+    real = {n: getattr(draft_queued, n) for n in
+            ("draft_one_lead", "pending_entry", "review", "config", "state")}
+    saved_review = draft_queued.review
+
+    class _FakeReview:
+        @staticmethod
+        def load_pending():
+            return {}
+
+        @staticmethod
+        def save_pending(entry):
+            return "lead-id"
+
+        @staticmethod
+        def notify_operator(cfg, lead_id, entry):
+            return None
+
+    class _FakeCfg(dict):
+        def get(self, k, d=None):
+            return dict.get(self, k, d)
+
+    try:
+        draft_queued.draft_one_lead = fake_draft_one_lead
+        draft_queued.pending_entry = lambda cfg, lead, s, b, m, t: {"target_email": lead["email"]}
+        draft_queued.review = _FakeReview
+        draft_queued.config = type("C", (), {
+            "load_client": staticmethod(lambda: _FakeCfg(
+                {"client": "ejentic", "client_name": "Ejentic AI",
+                 "paths": {"db": db}, "unsubscribe_base_url": "https://x"}))})
+        draft_queued.state = _state
+        draft_queued.main()
+    finally:
+        draft_queued.draft_one_lead = real["draft_one_lead"]
+        draft_queued.pending_entry = real["pending_entry"]
+        draft_queued.review = saved_review
+        draft_queued.config = real["config"]
+        draft_queued.state = real["state"]
+
+    check("the GROUNDED lead was drafted", "grounded@acme.ng" in drafted_emails)
+    check("the UNGROUNDED lead was NOT drafted", "blank@acme.ng" not in drafted_emails)
+    check("exactly one lead was drafted", len(drafted_emails) == 1)
+
+    # The skipped lead must still be draftable later — never dropped, never a new status.
+    status = conn.execute("SELECT status FROM leads WHERE email=?", ("blank@acme.ng",)).fetchone()[0]
+    check("the skipped lead keeps its 'sourced' status (draftable once enriched)",
+          status == _state.SOURCED)
+    check("'sourced' is still NOT a contacted state (so it is picked up again)",
+          _state.SOURCED not in _state.CONTACTED_STATES)
+    conn.close()
 
 
 # --------------------------------------------------------------------------
@@ -349,6 +457,7 @@ def main():
     test_generate_strategy_locks_to_real_offerings()
     test_select_offering_picks_best_fit()
     test_draft_lead_view_reads_facts()
+    test_ungrounded_leads_are_not_drafted()
     test_config_gate_default()
     print(f"\n{'='*50}\nRESULT: {PASS} passed, {FAIL} failed\n{'='*50}")
     sys.exit(1 if FAIL else 0)
