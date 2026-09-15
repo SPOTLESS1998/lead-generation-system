@@ -47,6 +47,18 @@ DEFAULTS = {
         "quality_gate": {                    # LLM-as-judge: score every draft, rewrite weak ones
             "enabled": True,
             "min_score": 8,                  # 1-10; drafts below this get a rewrite pass
+            "floor_score": 6,                # 1-10; drafts below this are REFUSED, not sent.
+                                             # Deliberately lower than min_score: min_score is
+                                             # what we aim for and drives the rewrite loop,
+                                             # floor_score is what we will actually put in a
+                                             # stranger's inbox. They used to be one number,
+                                             # which meant neither job was done — a draft
+                                             # scoring 6 against min_score 8 was rewritten,
+                                             # still scored 6, and shipped anyway. Setting the
+                                             # floor AT the aspiration rejects most honest
+                                             # copy and yields no volume; setting it too low
+                                             # ships filler. A refused draft is not lost: the
+                                             # lead stays 'sourced' and is retried.
             "max_revisions": 2,              # rewrite passes before accepting the best so far
             "best_of": 2,                    # draft N candidates, keep the highest-scoring (more robust on a flaky free chain than a longer serial revise chain)
         },

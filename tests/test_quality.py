@@ -154,13 +154,21 @@ check("finalize_body leaves ordinary parenthetical prose alone",
 # --------------------------------------------------------------------------
 # reject_reason — the deterministic sanity net (no LLM involved)
 # --------------------------------------------------------------------------
+# NOTE ON FIXTURES: every body here is deliberately CITATION-CLEAN against its lead's
+# facts — no figure, place, brand or acronym that LEAD/LEAD_FACTS doesn't contain.
+# draft_and_polish now refuses a draft citing anything the facts don't support (see
+# core/quality.citation_issues), so a fixture that "just" carried a decorative "40% in
+# 90 days" or an ALL-CAPS marker word would be thrown out as invention and these
+# orchestration tests would fail for a reason that has nothing to do with what they
+# assert. Keep new fixture bodies plain; the citation gate has its own suite
+# (tests/test_copy_citations.py).
 # Regression: a reasoning model returned its own scratchpad as the email body and it
 # was queued for a real prospect ("We need to produce email subject line and body...
 # Word count? Let's count:"). The judge would usually catch that, but it can be
 # offline and the gate can be off, so a structural check runs on every candidate.
 _GOOD = ("Hi Ada,\n\nAcme's solar install work in Maitama stands out. My guess is "
-         "qualifying those enquiries is still manual. We can cut that by 40% in 90 "
-         "days.\n\nWorth a 15-minute look?\n\nBest,\nEjentic AI")
+         "qualifying those enquiries is still manual, which is the part we could "
+         "take off your desk.\n\nWorth a 15-minute look?\n\nBest,\nEjentic AI")
 check("reject_reason passes a normal draft", quality.reject_reason("A quick idea", _GOOD) is None)
 check("reject_reason rejects an empty body", quality.reject_reason("S", "") is not None)
 check("reject_reason rejects an empty subject", quality.reject_reason("", _GOOD) is not None)
@@ -348,17 +356,17 @@ def _champ_gj(cfg, prompt):
         return {"score": s, "issues": ["generic"], "fix_hint": "cite a real detail"}, "judge"
     if "strict editor rejected" in prompt:                  # revise()
         _rev_prompts.append(prompt)
-        body = "Rev1 body WORSE" if len(_rev_prompts) == 1 else "Rev2 body BEST"
+        body = "Rev1 body worse" if len(_rev_prompts) == 1 else "Rev2 body better"
         return {"subject": f"R{len(_rev_prompts)}", "body": f"{body}\n\nBest,\nEjentic AI"}, "reviser"
     raise AssertionError("generate_json called with an unexpected prompt")
 quality.generate_json = _champ_gj
-df = DraftFn([("D", "Draft body CHAMP", "provA")])
+df = DraftFn([("D", "Draft body champ", "provA")])
 out = quality.draft_and_polish(qcfg({"enabled": True, "min_score": 8, "max_revisions": 2}),
                                LEAD, "brief", None, df)
 check("champion: returns the highest-scoring version (revision 2)", out[0] == "R2")
 check("champion: took two revision passes", len(_rev_prompts) == 2)
 check("champion: pass 2 rewrote from the champion draft, not the regressed revision 1",
-      "Draft body CHAMP" in _rev_prompts[1] and "Rev1 body WORSE" not in _rev_prompts[1])
+      "Draft body champ" in _rev_prompts[1] and "Rev1 body worse" not in _rev_prompts[1])
 
 
 print(f"\n{'='*50}\n  RESULT: {PASS} passed, {FAIL} failed\n{'='*50}")

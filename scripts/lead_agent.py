@@ -250,6 +250,12 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
         f"WHAT WE ACTUALLY KNOW ABOUT THEM (ground sentence 1 in this; do not invent other facts):\n    {facts}\n"
         if facts else ""
     )
+    # Ask for what the evidence can actually support. On a prospect whose whole file is a
+    # star rating, the standard "make it impossible to copy-paste to anyone else" demand
+    # cannot be met honestly, and pushing it is what produced invented offices and
+    # figures — so quality.copy_instructions softens the ask (never the honesty rule)
+    # when the file is thin. See core/quality.evidence_is_thin.
+    thin = quality.evidence_is_thin(lead)
 
     prompt = f"""You are a world-class B2B cold-email copywriter writing ONE email for {cfg['client_name']}.
 
@@ -261,7 +267,7 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     STRATEGY BRIEF — ground every line in this; do not invent facts beyond it:
     {strategy_brief}
 
-    {quality.copy_instructions(sender_name, magnet_url)}
+    {quality.copy_instructions(sender_name, magnet_url, thin_evidence=thin)}
 
     Reply with ONLY this JSON, no prose and no markdown fences:
     {{"subject": "<subject, WITHOUT a 'Subject:' prefix>", "body": "<full body, greeting through sign-off, using real newlines>"}}
