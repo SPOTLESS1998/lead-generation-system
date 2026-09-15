@@ -7,13 +7,24 @@ every draft PRE-CHECKS today's real-Claude spend against a per-client daily cap:
     gen_cfg = budget.copy_cfg(conn, cfg)          # premium-first if under cap, else free chain
     subject, body, _ = generate_copy(gen_cfg, lead, brief, magnet_url)
 
-Real spend is reconstructed from the observability ledger (`pipeline_events`): tokens
-attributed to provider 'anthropic', priced at real Anthropic list rates. This is a
+Spend is reconstructed from the observability ledger (`pipeline_events`): tokens
+attributed to provider 'anthropic', priced at official Anthropic list rates. This is a
 SEPARATE number from observability's `cost_usd` (that one is notional, for pricing the
 service). Unknown models are priced as Opus (the expensive tier) so the guard errs
 toward stopping early. The cap is a soft daily ceiling: a single in-flight draft can
 overshoot it by at most one draft's cost (the ledger row is written when the draft
 finishes), which is bounded and acceptable.
+
+⚠️ WHAT THIS NUMBER IS NOT. It is only a real dollar bill when ANTHROPIC_BASE_URL is
+the official API. Point it at a proxy (AgentRouter is the live setting — see
+core/ai.py:_anthropic_chat) and the resale rates are not Anthropic's, so `spent_today_usd`
+and /health report a figure NOBODY invoices. Treat it there as what it actually is: a
+deterministic TOKEN-VOLUME ceiling denominated in official-price dollars. That is still
+a genuine guard — it stops the run at a predictable token count — but do not quote it as
+cost, and do not claim a saving measured against it. `_rates()` also cannot know a model
+it has no entry for: `claude-opus-5` reaches the Opus row by fallthrough, not by knowing
+its price. Never substitute a guessed rate for a missing one; add a measured entry or
+leave the conservative fallthrough alone.
 
 No secrets and no network here — this module only reads the local ledger and the
 config. It must NOT be imported by core/ai.py (observability already imports ai +
@@ -22,8 +33,10 @@ state; keep the arrow pointing one way). Callers do the budget check.
 
 from core import state
 
-# Real Anthropic list prices, $ per 1M tokens (input, output). Used ONLY to meter the
-# daily cap + surface real spend on /health — never for the notional observability cost.
+# Official Anthropic list prices, $ per 1M tokens (input, output). Used ONLY to meter the
+# daily cap + surface spend on /health — never for the notional observability cost. See the
+# module docstring: against a proxy base URL these are NOT the rates you are billed, so the
+# cap behaves as a token-volume ceiling rather than a dollar one.
 _ANTHROPIC_PRICES = {
     "opus":   (15.0, 75.0),
     "sonnet": (3.0, 15.0),
