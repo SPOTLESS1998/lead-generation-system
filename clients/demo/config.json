@@ -18,7 +18,6 @@
     "anthropic_model": "claude-opus-4-8",
     "premium_daily_usd_cap": null
   },
-  "demo_mode": false,
   "lead_source": "csv",
   "timezone": "Africa/Lagos",
   "booking": {

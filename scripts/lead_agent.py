@@ -363,25 +363,6 @@ def pending_entry(cfg, lead, subject, body, magnet_url=None, magnet_token=None):
     }
 
 
-def get_demo_pitch(company_name, base_url=None, sign_off=None):
-    """Canned pitches for demo_mode (video recording only) — no API calls.
-
-    Links are built from the client's base URL so they always point at the running
-    approval server (never a stale hardcoded port). The SIGN-OFF comes from the
-    caller's config: a brand string baked in here would sign another tenant's demo
-    mail with our name (MULTITENANCY.md). The bodies are fixtures matched to
-    clients/demo/leads.csv — swap them per client if you record a client's own demo.
-    """
-    base = (base_url or "http://localhost:5001").rstrip("/")
-    tail = f"\n\nBest,\n{(sign_off or '').strip()}".rstrip()
-    if "Adebayo" in company_name:
-        return ("Automating Tax Audits for Adebayo & Co", "Hi Oluwatobi,\n\nI noticed Adebayo & Co handles a massive volume of tax audits and payroll processing for mid-sized enterprises. Manually verifying those ledgers takes your team hours every week.\n\nI mapped out a step-by-step architectural blueprint showing exactly how your firm can automate ledger ingestion and payroll reconciliation using OCR and secure AI models. I've attached the blueprint below for your review.\n\n" + f"{base}/magnet/blueprint" + tail)
-    elif "Capital Homes" in company_name:
-        return ("Automating Client Inquiries for Capital Homes", "Hi Amina,\n\nI love the luxury properties you are brokering at Capital Homes Abuja. Since you manage thousands of client inquiries monthly, your team likely spends hours answering repetitive questions about property viewings, especially late at night.\n\nI built a custom AI chatbot prototype specifically trained on your Maitama listings. I've generated a 7-day temporary access pass for you to test the software live.\n\nHere is the secure link to test the prototype:\n\n" + f"{base}/magnet/chatbot" + tail)
-    else:
-        return ("Strategic Audit for Lagos Style Hub", "Hi Chinedu,\n\nI've been following Lagos Style Hub's growth. Managing thousands of daily fashion orders across Nigeria must create a massive bottleneck for your customer support team, leading to missed sales in your DMs.\n\nI did a brief strategic audit of your current workflow and mapped out the exact step-by-step process of how you can build an autonomous AI lead-generation and support system to instantly capture lost WhatsApp sales. \n\nI've linked the strategic breakdown below.\n\n" + f"{base}/magnet/strategic-audit" + tail)
-
-
 # --------------------------------------------------------------------------
 # Main pipeline
 # --------------------------------------------------------------------------
@@ -423,7 +404,7 @@ def main(preview=False, limit=None):
     _prem = ("on" + (f" (≤${_cap:.2f}/day)" if _cap else " (uncapped)")) if budget.premium_enabled(cfg) else "off"
     _gate = "on" if ((cfg.get("copy", {}) or {}).get("quality_gate", {}) or {}).get("enabled") else "off"
     print(f"   client={cfg['client']}  send_mode={cfg['sending']['mode']}  "
-          f"demo_mode={cfg['demo_mode']}  premium_copy={_prem}  quality_gate={_gate}")
+          f"premium_copy={_prem}  quality_gate={_gate}")
     print(f"   draft_cap={draft_cap(cfg, preview_limit=limit if preview else None)}/run  "
           f"(sourcing is uncapped by this — every qualified lead is banked)")
     if preview:
@@ -481,8 +462,20 @@ def main(preview=False, limit=None):
     # --- Draft from the LIST, oldest first ---------------------------------
     # Reading the pool from the DB (not from today's scrape) means the backlog gets
     # used before anything new, and one code path serves both.
+    #
+    # Anyone already holding an approvable draft is excluded HERE, before drafting.
+    # Without this, a lead that returned to 'sourced' while its earlier draft still
+    # sat in the queue got drafted again, and the operator saw two approvable drafts
+    # for one prospect — approving both sends that person two cold emails. Same rule
+    # as scripts/draft_queued.py, shared via core.review so they cannot drift apart.
+    already_queued = review.emails_with_live_draft(cfg["client"])
     pool = [_lead_from_row(r) for r in
             state.leads_by_status(conn, cfg["client"], state.SOURCED, limit=max_drafts * 4)]
+    skipped_queued = sum(1 for l in pool if l.get("email") in already_queued)
+    pool = [l for l in pool if l.get("email") not in already_queued]
+    if skipped_queued:
+        print_step(f"⏭️  [List] {skipped_queued} lead(s) skipped — they already have a "
+                   f"draft awaiting your approval.")
     totals = state.count_leads_by_status(conn, cfg["client"])
     print_step(f"📇 [List] {sum(totals.values())} lead(s) on the list "
                f"{totals or '{}'}; drafting up to {max_drafts} this run.")
@@ -513,54 +506,46 @@ def main(preview=False, limit=None):
 
         magnet_url = None
         magnet_token = None
-        if cfg["demo_mode"]:
-            print_step(f"🧠 [demo] Strategist analyzing {lead['company_name']}...")
-            time.sleep(1.0)
-            subject, body = get_demo_pitch(
-                lead["company_name"], cfg.get("unsubscribe_base_url"),
-                sign_off=cfg.get("from_name") or cfg.get("client_name"))
-            provider = "demo"
-        else:
+        try:
+            # One shared recipe (see draft_one_lead): fit → strategy → magnet →
+            # copy → quality gate, metered as a single 'draft' ledger step.
+            subject, body, provider, magnet_url, magnet_token = draft_one_lead(
+                conn, cfg, lead, run_id)
+        except ai.AllProvidersCoolingDown as e:
+            # Nothing was actually called — every provider was still inside its
+            # circuit-breaker cooldown. That is a recoverable, usually-brief state
+            # (a gateway restart, one slow upstream), NOT an outage.
+            #
+            # This matters because the drafting phase runs at the END of a long
+            # discovery pass, so a blip during discovery can leave every breaker
+            # open exactly when drafting starts. Without this wait, a 60-second
+            # hiccup silently cost a once-daily run its ENTIRE day of drafting:
+            # every lead in the pool hit the same open breaker and was released.
+            wait = min(ai.cooldown_remaining() + 2.0, MAX_COOLDOWN_WAIT)
+            print(f"   ⏳ All providers cooling down ({e}). "
+                  f"Waiting {wait:.0f}s and retrying this lead once...")
+            time.sleep(wait)
             try:
-                # One shared recipe (see draft_one_lead): fit → strategy → magnet →
-                # copy → quality gate, metered as a single 'draft' ledger step.
                 subject, body, provider, magnet_url, magnet_token = draft_one_lead(
                     conn, cfg, lead, run_id)
-            except ai.AllProvidersCoolingDown as e:
-                # Nothing was actually called — every provider was still inside its
-                # circuit-breaker cooldown. That is a recoverable, usually-brief state
-                # (a gateway restart, one slow upstream), NOT an outage.
-                #
-                # This matters because the drafting phase runs at the END of a long
-                # discovery pass, so a blip during discovery can leave every breaker
-                # open exactly when drafting starts. Without this wait, a 60-second
-                # hiccup silently cost a once-daily run its ENTIRE day of drafting:
-                # every lead in the pool hit the same open breaker and was released.
-                wait = min(ai.cooldown_remaining() + 2.0, MAX_COOLDOWN_WAIT)
-                print(f"   ⏳ All providers cooling down ({e}). "
-                      f"Waiting {wait:.0f}s and retrying this lead once...")
-                time.sleep(wait)
-                try:
-                    subject, body, provider, magnet_url, magnet_token = draft_one_lead(
-                        conn, cfg, lead, run_id)
-                except Exception as e2:
-                    print(f"   ❌ Still failing after the cooldown for "
-                          f"{lead['company_name']}: {e2}. Releasing the claim.")
-                    state.set_status(conn, cfg["client"], lead["email"], state.SOURCED)
-                    continue
-            except Exception as e:
-                print(f"   ❌ Generation failed for {lead['company_name']}: {e}. "
-                      f"Releasing the claim so this lead retries on the next run.")
-                # We 'claimed' this lead as queued BEFORE drafting so a re-run wouldn't
-                # double-draft it. No draft was produced, so release the claim by
-                # returning it to the list as `sourced`.
-                #
-                # This used to DELETE the row, which threw away a perfectly good
-                # scraped contact every time a provider hiccuped — the lead had to be
-                # re-discovered and re-scraped from scratch. Rolling the STATUS back
-                # keeps the contact and still frees it for retry.
+            except Exception as e2:
+                print(f"   ❌ Still failing after the cooldown for "
+                      f"{lead['company_name']}: {e2}. Releasing the claim.")
                 state.set_status(conn, cfg["client"], lead["email"], state.SOURCED)
                 continue
+        except Exception as e:
+            print(f"   ❌ Generation failed for {lead['company_name']}: {e}. "
+                  f"Releasing the claim so this lead retries on the next run.")
+            # We 'claimed' this lead as queued BEFORE drafting so a re-run wouldn't
+            # double-draft it. No draft was produced, so release the claim by
+            # returning it to the list as `sourced`.
+            #
+            # This used to DELETE the row, which threw away a perfectly good
+            # scraped contact every time a provider hiccuped — the lead had to be
+            # re-discovered and re-scraped from scratch. Rolling the STATUS back
+            # keeps the contact and still frees it for retry.
+            state.set_status(conn, cfg["client"], lead["email"], state.SOURCED)
+            continue
 
         print("\n📝 --- DRAFTED PITCH READY ---")
         print(f"Target: {lead['first_name']} {lead['last_name']} - {lead['company_name']}")

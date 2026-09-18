@@ -86,6 +86,29 @@ def set_pending_status(lead_id, status):
         _write(leads)
 
 
+def emails_with_live_draft(client):
+    """Addresses that already have an APPROVABLE draft waiting, for this client.
+
+    The one definition of "do not draft this person again", used by every drafting
+    entry point. It exists because the two entry points disagreed: draft_queued.py
+    filtered on its own local set while lead_agent.py — the one cron actually runs —
+    had no filter at all, so any lead that returned to 'sourced' while holding a
+    queue entry got drafted a second time. That shipped 20 prospects with two
+    approvable drafts each; approving both would have sent the same person two cold
+    emails, which is how a sending domain earns spam complaints.
+
+    Deliberately keyed on status == "pending" and NOT on "has any queue entry".
+    A quarantined or declined draft is dead: the lead SHOULD become draftable again
+    once it returns to 'sourced' (that is how a refused draft gets a second, honest
+    attempt). Only a live, approvable draft blocks a re-draft.
+    """
+    return {
+        e.get("target_email")
+        for e in load_pending().values()
+        if e.get("client") == client and e.get("status") == "pending" and e.get("target_email")
+    }
+
+
 # --- operator notification --------------------------------------------------
 
 def _html_shell(inner):

@@ -112,10 +112,11 @@ def main():
 
     # Skip any queued lead that already has a pending draft awaiting approval,
     # so re-running this is idempotent (never double-drafts / double-emails).
-    pending_emails = {
-        e.get("target_email") for e in review.load_pending().values()
-        if e.get("client") == client
-    }
+    # Shared with scripts/lead_agent.py via core.review so the two entry points
+    # cannot drift — they did, and that is what produced double drafts. Note this
+    # counts only LIVE (status="pending") drafts: a quarantined or declined draft
+    # must not block an honest second attempt. See review.emails_with_live_draft.
+    pending_emails = review.emails_with_live_draft(client)
     todo = [r for r in rows if r["email"] not in pending_emails]
 
     print(f"\n[{time.strftime('%H:%M:%S')}] {len(rows)} queued lead(s); "

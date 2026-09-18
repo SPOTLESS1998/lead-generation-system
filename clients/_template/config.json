@@ -40,7 +40,6 @@
     "anthropic_model": "claude-opus-4-8",
     "premium_daily_usd_cap": 5.0
   },
-  "demo_mode": false,
   "timezone": "UTC",
   "booking": {
     "enabled": true,

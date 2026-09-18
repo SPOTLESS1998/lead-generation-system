@@ -54,7 +54,7 @@ def _run_pipeline(n_leads, daily_cap, fail_emails=(), env=None):
     os.environ["CLIENT"] = "testclient"
     from core import config, review
     cfg = {"client": "testclient", "client_name": "Test Co", "from_name": "Tester",
-           "demo_mode": False, "lead_source": "maps_firecrawl", "timezone": "UTC",
+           "lead_source": "maps_firecrawl", "timezone": "UTC",
            "unsubscribe_base_url": "http://localhost:5002",
            "offerings": ["Svc"], "service_outcomes": {"Svc": "a real result"},
            "drafting": {"daily_cap": daily_cap},

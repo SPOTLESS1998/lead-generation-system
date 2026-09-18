@@ -81,7 +81,6 @@ would pitch someone else's services in this client's name.
 | `copy.anthropic_model` | Which Claude to use for premium copy (e.g. `claude-opus-4-8`). |
 | `copy.premium_daily_usd_cap` | **Hard daily $ ceiling** on real-Claude spend, per client. Once today's metered spend reaches it, copy auto-falls back to the free chain until tomorrow. `null`/absent = uncapped. |
 | `copy.quality_gate` | Optional draft-scoring gate — see below. `{enabled, min_score, max_revisions, best_of}`. |
-| `demo_mode` | `false` = real AI generation. `true` = canned pitches (recording only). |
 | `timezone` | IANA tz (e.g. `Africa/Lagos`) used when proposing and booking meeting times. |
 | `booking.enabled` | `true` = create a real Google Calendar event when an *interested* reply is approved. |
 | `booking.provider` | Booking backend — `composio_googlecalendar` (via the Composio CLI). |

@@ -398,6 +398,13 @@ def test_ungrounded_leads_are_not_drafted():
             return {}
 
         @staticmethod
+        def emails_with_live_draft(client):
+            # Mirrors core.review.emails_with_live_draft: the set of addresses that
+            # already hold an approvable draft. Empty here so this test's leads are
+            # all draftable and the grounding gate is what decides, not the dedupe.
+            return set()
+
+        @staticmethod
         def save_pending(entry):
             return "lead-id"
 

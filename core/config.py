@@ -63,7 +63,6 @@ DEFAULTS = {
             "best_of": 2,                    # draft N candidates, keep the highest-scoring (more robust on a flaky free chain than a longer serial revise chain)
         },
     },
-    "demo_mode": False,                      # False = real AI generation
     "lead_source": "csv",                    # "csv" (curated file) | "maps_firecrawl" | "yellowpages" (auto-discovery)
     "drafting": {                            # sourcing and drafting are metered separately
         "daily_cap": None,                   # max drafts per run (None = MAX_PER_RUN, the hard

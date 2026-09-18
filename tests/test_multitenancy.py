@@ -184,10 +184,19 @@ try:
     check("outbound headers carry no house brand",
           "X-Ejentic" not in _code_only(os.path.join(ROOT, "core", "sender.py")))
 
-    # The demo pitch signs off with the TENANT's name, whoever runs it.
-    _s, _b = lead_agent.get_demo_pitch("Adebayo & Co", "http://x", sign_off="Ada Obi")
-    check("demo pitch signs off with the tenant's own name",
-          _b.strip().endswith("Ada Obi") and "Ejentic" not in _b)
+    # The demo-pitch path is GONE (2026-09-18). `get_demo_pitch` returned canned
+    # bodies naming invented firms and people ("Capital Homes", "Lagos Style Hub",
+    # "Hi Amina,"), and the three /magnet/* demo routes served pages built around
+    # the same fictions. It was dead code — demo_mode was false in every config —
+    # but it was fabricated client detail living in code, which is exactly what
+    # MULTITENANCY.md forbids. Assert it stays gone rather than re-testing its
+    # sign-off behaviour.
+    check("get_demo_pitch is gone", not hasattr(lead_agent, "get_demo_pitch"))
+    for mod in ("scripts/lead_agent.py", "scripts/approval_server.py"):
+        code = _code_only(os.path.join(ROOT, mod))
+        invented = [n for n in ("Capital Homes", "Lagos Style Hub", "Adebayo & Co Tax",
+                                "Oluwatobi", "Maitama", "Asokoro") if n in code]
+        check(f"{mod} names no invented client or person", not invented)
 
     # ----------------------------------------------------------------------
     # The template itself is a complete starting point
