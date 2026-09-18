@@ -96,7 +96,15 @@ ok("past: 15-min shows fired (✓)", "15m ✓" in body)
 
 print("\n--- 4. every field is HTML-escaped ----------------------------")
 ok("company HTML escaped", "Acme &lt;script&gt;Foods" in body)
-ok("no raw <script> injected", "<script>" not in body)
+# This used to be a blanket `"<script>" not in body`, which worked only while no
+# page carried ANY JavaScript. core/theme.py now ships a first-party pre-paint
+# theme-restore script, so the blanket form fails on a page that is perfectly safe.
+# Narrowed rather than dropped: assert the SEEDED payload never renders as live
+# markup (that is the actual injection this test exists to catch), and pin the
+# script count so a future stray <script> still has to be justified.
+ok("seeded <script> never renders raw", "<script>Foods" not in body)
+ok("no unescaped angle bracket from the seeded name", "Acme <script>" not in body)
+ok("only the known first-party theme script is present", body.count("<script>") == 1)
 
 print("\n--- 5. empty state for a client with no bookings --------------")
 # Point the cache at a fresh empty DB and re-request.

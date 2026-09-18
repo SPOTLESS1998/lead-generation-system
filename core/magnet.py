@@ -28,6 +28,7 @@ import json
 import uuid
 
 from .ai import generate_json
+from . import theme
 
 
 def new_token() -> str:
@@ -150,43 +151,48 @@ def render_html(cfg, content: dict) -> str:
 
     prepared_line = f"Prepared for {prepared_for} at {company}" if prepared_for else f"Prepared for {company}"
     # Optional: let the prospect jump to the main site and explore (set client config "website_url").
-    brand_top = (f'<a href="{website}" style="color:#7f8c8d;text-decoration:none;">{client_name} · Free AI Audit</a>'
+    brand_top = (f'<a href="{website}">{client_name} · Free AI Audit</a>'
                  if website else f"{client_name} · Free AI Audit")
-    explore_cta = (f'<p style="text-align:center;margin:22px 0 0;">'
-                   f'<a href="{website}" style="color:#2980b9;font-weight:bold;text-decoration:none;">'
-                   f'Explore what {client_name} builds →</a></p>' if website else "")
+    explore_cta = (f'<p style="text-align:center;margin:26px 0 0;">'
+                   f'<a href="{website}">Explore what {client_name} builds →</a></p>'
+                   if website else "")
 
     steps_html = ""
     for i, step in enumerate(content.get("steps") or [], start=1):
         steps_html += (
-            f'<div style="margin:18px 0;padding-left:16px;border-left:3px solid #4CAF50;">'
-            f'<h3 style="color:#2980b9;margin:0 0 6px;">Step {i}: {esc(step.get("title"))}</h3>'
-            f'<p style="margin:0;color:#444;">{esc(step.get("detail"))}</p>'
+            f'<div class="step">'
+            f'<h3>Step {i}: {esc(step.get("title"))}</h3>'
+            f'<p class="muted" style="margin:4px 0 0;">{esc(step.get("detail"))}</p>'
             f'</div>'
         )
 
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{headline}</title>
-</head>
-<body style="font-family:'Inter',Arial,sans-serif;background:#f4f7f6;color:#333;margin:0;padding:40px 16px;">
-  <div style="max-width:760px;margin:auto;background:#fff;padding:40px;border-radius:12px;box-shadow:0 4px 15px rgba(0,0,0,0.08);border-top:5px solid #4CAF50;">
-    <p style="color:#7f8c8d;font-size:13px;text-transform:uppercase;letter-spacing:1px;margin:0 0 8px;">{brand_top}</p>
-    <h1 style="color:#2c3e50;margin:0 0 6px;">{headline}</h1>
-    <p style="color:#7f8c8d;font-size:17px;margin:0 0 24px;">{prepared_line}</p>
-    <hr style="border:none;border-top:1px solid #eee;margin:0 0 24px;">
-    <h2 style="color:#333;font-size:19px;">The bottleneck we see</h2>
-    <p style="color:#444;line-height:1.6;">{bottleneck}</p>
-    <h2 style="color:#333;font-size:19px;margin-top:28px;">A step-by-step AI solution</h2>
-    {steps_html}
-    <div style="margin-top:32px;padding:20px;background:#e8f4f8;border-radius:8px;">
-      <strong style="color:#2c3e50;">{cta}</strong>
+    inner = f"""
+  <div class="wrap">
+    <div class="panel" style="padding:34px 30px;">
+      <p class="meta" style="text-transform:uppercase;letter-spacing:0.08em;margin:0 0 10px;">{brand_top}</p>
+      <h1>{headline}</h1>
+      <p class="muted" style="margin:8px 0 0;font-size:16px;">{prepared_line}</p>
+      <hr class="rule">
+      <h2>The bottleneck we see</h2>
+      <p style="margin:8px 0 0;">{bottleneck}</p>
+      <h2 style="margin-top:30px;">A step-by-step AI solution</h2>
+      {steps_html}
+      <div class="cta">{cta}</div>
+      {explore_cta}
+      <p class="meta" style="margin-top:30px;">This page was prepared specifically for {company} by {client_name}.</p>
     </div>
-    {explore_cta}
-    <p style="margin-top:28px;color:#aaa;font-size:12px;">This page was prepared specifically for {company} by {client_name}.</p>
-  </div>
-</body>
-</html>"""
+  </div>"""
+
+    # A few page-specific rules layered on the shared system (core/theme.py).
+    extra = """
+<style>
+.step { margin: 18px 0; padding-left: 16px; border-left: 2px solid var(--accent); }
+.step h3 { color: var(--ink); }
+.cta {
+  margin-top: 32px; padding: 20px 22px;
+  background: var(--accent-quiet);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 8px; font-weight: 600; color: var(--ink);
+}
+</style>"""
+    return theme.shell(headline, extra + inner)

@@ -13,7 +13,7 @@ from flask import Flask
 
 # Make the project root importable so `core` resolves regardless of the CWD.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core import config, state, sender, suppression, compliance, review, magnet, scheduling, reminders, budget
+from core import config, state, sender, suppression, compliance, review, magnet, scheduling, reminders, budget, theme
 from core import observability as obs
 from core import calendar as gcal   # core/calendar.py (the booking seam), not stdlib calendar
 
@@ -49,9 +49,20 @@ def open_conn(cfg):
 
 
 def page(title, body, emoji="✅"):
-    return f"""<html><body style="font-family: Arial, sans-serif; text-align:center; margin-top:60px; color:#333;">
-    <h1>{emoji} {title}</h1><p style="font-size:16px; color:#555;">{body}</p>
-    <p style="color:#999;">You may now close this tab.</p></body></html>"""
+    """A one-line outcome page (approved / declined / unsubscribed).
+
+    Styling comes from core/theme.shell — see that module for why the palette is
+    hardcoded rather than read from the tenant's config.
+    """
+    inner = (
+        '<div class="wrap center">'
+        '<div class="panel">'
+        f'<h1>{emoji} {title}</h1>'
+        f'<p class="muted" style="margin:10px 0 0;">{body}</p>'
+        '<p class="meta" style="margin:18px 0 0;">You may now close this tab.</p>'
+        '</div></div>'
+    )
+    return theme.shell(title, inner)
 
 
 def _friendly_when(when_str, tz):
@@ -74,9 +85,11 @@ def _friendly_when(when_str, tz):
 
 # Spam-badge palette — mirrors the readout in core/review.py.
 _SPAM_BADGE = {
-    "ok":   ("#e8f5e9", "#2e7d32", "✅ Spam: clean"),
-    "warn": ("#fff8e1", "#ef6c00", "⚠️ Spam: minor"),
-    "high": ("#ffebee", "#c62828", "🚫 Spam: high risk"),
+    # (badge class, label) — colours come from the shared tokens in core/theme.py
+    # so the three states stay legible in both light and dark.
+    "ok":   ("badge-success", "Spam: clean"),
+    "warn": ("badge-warning", "Spam: minor"),
+    "high": ("badge-danger",  "Spam: high risk"),
 }
 
 
@@ -91,35 +104,38 @@ def _card(lead_id, entry):
     who_line = " · ".join(x for x in [name, title] if x)
 
     spam = entry.get("spam") or {}
-    bg, fg, label = _SPAM_BADGE.get(spam.get("level", "ok"), _SPAM_BADGE["ok"])
-    badge = (f'<span style="background:{bg};color:{fg};padding:4px 10px;border-radius:12px;'
-             f'font-size:12px;font-weight:bold;">{label} ({spam.get("score", 0)})</span>')
+    badge_cls, badge_label = _SPAM_BADGE.get(spam.get("level", "ok"), _SPAM_BADGE["ok"])
+    badge = (f'<span class="badge {badge_cls}">{badge_label} '
+             f'({spam.get("score", 0)})</span>')
 
-    kind_bg, kind_label = (("#ede7f6", "↩ REPLY") if kind == "reply" else ("#e3f2fd", "✉ COLD"))
-    kind_badge = (f'<span style="background:{kind_bg};color:#333;padding:4px 10px;'
-                  f'border-radius:12px;font-size:12px;font-weight:bold;">{kind_label}</span>')
+    kind_label = "↩ Reply" if kind == "reply" else "✉ Cold"
+    kind_badge = f'<span class="badge badge-accent">{kind_label}</span>'
 
     magnet = ""
     if entry.get("magnet_url"):
-        magnet = (f'<a href="{html.escape(entry["magnet_url"])}" target="_blank" '
-                  f'style="color:#0056b3;font-size:14px;">🎁 View their personalized page →</a>')
+        magnet = (f'<p style="margin:0 0 16px;"><a href="{html.escape(entry["magnet_url"])}" '
+                  f'target="_blank" rel="noopener">🎁 View their personalized page →</a></p>')
+
+    who_html = f'<p class="muted" style="margin:2px 0 0;">{who_line}</p>' if who_line else ""
 
     return f"""
-    <div style="background:white;border:1px solid #e0e0e0;border-radius:10px;padding:22px;
-                margin-bottom:20px;box-shadow:0 2px 6px rgba(0,0,0,0.06);text-align:left;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-        <h2 style="margin:0;color:#2c3e50;font-size:20px;">{company}</h2>
-        <div>{kind_badge} &nbsp; {badge}</div>
+    <div class="panel">
+      <div class="head">
+        <div>
+          <h2>{company}</h2>
+          {who_html}
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">{kind_badge}{badge}</div>
       </div>
-      <p style="margin:0 0 14px;color:#666;font-size:14px;">{who_line}</p>
-      <div style="background:#f1f8e9;border-left:4px solid #4CAF50;padding:14px;border-radius:4px;margin-bottom:14px;">
-        <strong>Subject:</strong> {subject}<br><br>{body}
+      <div class="draft">
+        <span class="subject">{subject}</span>
+        {body}
       </div>
-      <p style="margin:0 0 18px;">{magnet}</p>
-      <a href="/approve/{lead_id}" style="background:#4CAF50;color:white;padding:12px 26px;
-         text-decoration:none;border-radius:6px;font-weight:bold;margin-right:12px;">✅ Approve &amp; Send</a>
-      <a href="/decline/{lead_id}" style="background:#f44336;color:white;padding:12px 26px;
-         text-decoration:none;border-radius:6px;font-weight:bold;">❌ Decline</a>
+      {magnet}
+      <div class="actions">
+        <a class="btn btn-primary" href="/approve/{lead_id}">Approve &amp; Send</a>
+        <a class="btn btn-danger" href="/decline/{lead_id}">Decline</a>
+      </div>
     </div>"""
 
 
@@ -141,22 +157,21 @@ def dashboard():
         cards = "".join(_card(lid, e) for lid, e in pending)
         count_line = f"{len(pending)} draft{'s' if len(pending) != 1 else ''} waiting for your approval"
     else:
-        cards = ('<div style="background:white;border-radius:10px;padding:50px;color:#999;">'
-                 'No drafts waiting. Run <code>lead_agent.py</code> or <code>reply_agent.py</code> '
-                 'to queue some.</div>')
+        cards = ('<div class="panel empty">No drafts waiting. Run <code>lead_agent.py</code> '
+                 'or <code>reply_agent.py</code> to queue some.</div>')
         count_line = "Nothing pending right now"
 
-    return f"""<html><head><title>{client_label} — Approvals</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1"></head>
-    <body style="font-family:Arial,sans-serif;background:#f4f7f6;margin:0;padding:0;color:#333;">
-      <div style="max-width:760px;margin:0 auto;padding:40px 20px;">
-        <h1 style="color:#2c3e50;margin-bottom:4px;">📋 {client_label} — Approval Queue</h1>
-        <p style="color:#777;margin-top:0;margin-bottom:30px;">{count_line}. &nbsp;·&nbsp;
-           <a href="/appointments" style="color:#0056b3;text-decoration:none;">📅 Booked appointments</a> &nbsp;·&nbsp;
-           <a href="/health" style="color:#0056b3;text-decoration:none;">🩺 Pipeline health</a></p>
+    inner = f"""
+      <div class="wrap">
+        <h1>{client_label}</h1>
+        <p class="muted" style="margin:6px 0 4px;">Approval queue · {count_line}</p>
+        <p class="meta" style="margin:0 0 28px;">
+          <a href="/appointments">📅 Booked appointments</a> &nbsp;·&nbsp;
+          <a href="/health">🩺 Pipeline health</a>
+        </p>
         {cards}
-      </div>
-    </body></html>""", 200
+      </div>"""
+    return theme.shell(f"{client_label} — Approvals", inner), 200
 
 
 @app.route('/approve/<lead_id>')
@@ -357,7 +372,7 @@ def interested(token):
         when = _friendly_when(booked.get("start_iso") or start_local, tz)
         link = booked.get("html_link")
         extra = (f'<br><br><a href="{html.escape(link)}" '
-                 f'style="color:#2e7d32;font-weight:bold;">Add to your calendar →</a>'
+                 f'style="color:var(--success);font-weight:600;">Add to your calendar →</a>'
                  if link else "")
         print(f"✅ One-click booking for {email} at {start_local} ({tz}).")
         return page("You're booked! 🎉",
@@ -411,10 +426,10 @@ def _reminder_pills(lead_times, sent):
     out = []
     for m in lead_times:
         done = m in sent
-        bg, fg, mark = ("#e8f5e9", "#2e7d32", "✓") if done else ("#f0f0f0", "#999", "○")
+        bg, fg, mark = ("var(--accent-quiet)", "var(--success)", "✓") if done else ("transparent", "var(--ink-faint)", "○")
         out.append(f'<span style="background:{bg};color:{fg};padding:2px 8px;border-radius:10px;'
                    f'font-size:12px;margin-right:4px;white-space:nowrap;">{m}m {mark}</span>')
-    return "".join(out) or '<span style="color:#bbb;font-size:12px;">—</span>'
+    return "".join(out) or '<span class="meta">—</span>'
 
 
 def _appt_row(item, tz, lead_times):
@@ -425,13 +440,13 @@ def _appt_row(item, tz, lead_times):
     service = html.escape(r["service"] or "—")
     email = html.escape(r["lead_email"])
     when = html.escape(_friendly_when(r["starts_at"], tz))
-    who = name + (f'<br><span style="color:#999;font-size:13px;">{company}</span>' if company else "")
+    who = name + (f'<br><span class="meta">{company}</span>' if company else "")
     return (
-        '<tr style="border-bottom:1px solid #eee;">'
+        '<tr>'
         f'<td style="padding:12px 10px;">{who}</td>'
         f'<td style="padding:12px 10px;">{service}</td>'
         f'<td style="padding:12px 10px;white-space:nowrap;">{when}</td>'
-        f'<td style="padding:12px 10px;"><a href="mailto:{email}" style="color:#0056b3;">{email}</a></td>'
+        f'<td><a href="mailto:{email}">{email}</a></td>'
         f'<td style="padding:12px 10px;">{_reminder_pills(lead_times, sent)}</td>'
         '</tr>'
     )
@@ -439,14 +454,14 @@ def _appt_row(item, tz, lead_times):
 
 def _appt_table(title, items, empty_msg, tz, lead_times):
     if not items:
-        return (f'<h2 style="color:#2c3e50;font-size:18px;margin-top:34px;">{title}</h2>'
-                f'<p style="color:#999;">{empty_msg}</p>')
+        return (f'<h2 style="margin-top:34px;">{title}</h2>'
+                f'<p class="muted">{empty_msg}</p>')
     rows = "".join(_appt_row(it, tz, lead_times) for it in items)
     return (
-        f'<h2 style="color:#2c3e50;font-size:18px;margin-top:34px;">{title}</h2>'
-        '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;background:white;'
+        f'<h2 style="margin-top:34px;">{title}</h2>'
+        '<div class="panel" style="overflow-x:auto;padding:6px 14px;"><table>'
         'border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,0.06);overflow:hidden;">'
-        '<tr style="text-align:left;color:#777;font-size:13px;background:#fafafa;">'
+        '<tr>'
         '<th style="padding:10px;">Client</th><th style="padding:10px;">Service</th>'
         '<th style="padding:10px;">When</th><th style="padding:10px;">Contact</th>'
         '<th style="padding:10px;">Reminders</th></tr>'
@@ -498,53 +513,51 @@ def appointments():
                     "No upcoming meetings. When a prospect books, it lands here.", tz, lead_times)
         + _appt_table("✅ Past", past, "Nothing here yet.", tz, lead_times)
     )
-    return f"""<html><head><title>{client_label} — Appointments</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1"></head>
-    <body style="font-family:Arial,sans-serif;background:#f4f7f6;margin:0;padding:0;color:#333;">
-      <div style="max-width:900px;margin:0 auto;padding:40px 20px;">
-        <p style="margin:0 0 4px;"><a href="/" style="color:#0056b3;text-decoration:none;">← Approval queue</a></p>
-        <h1 style="color:#2c3e50;margin-bottom:4px;">📅 {client_label} — Booked Appointments</h1>
-        <p style="color:#777;margin-top:0;">{count_line}. The reminder agent pings you before each one.</p>
+    inner = f"""
+      <div class="wrap" style="max-width:920px;">
+        <p style="margin:0 0 10px;"><a href="/">← Approval queue</a></p>
+        <h1>📅 Booked Appointments</h1>
+        <p class="muted" style="margin:6px 0 28px;">{count_line}. The reminder agent pings you before each one.</p>
         {body}
-      </div>
-    </body></html>""", 200
+      </div>"""
+    return theme.shell(f"{client_label} — Appointments", inner), 200
 
 
 # --- pipeline health / accounting dashboard --------------------------------
 
-# Fault-status palette (mirrors the lifecycle in core/state.py's faults table).
+# Fault-status palette — badge classes from core/theme.py, so the states stay
+# legible in both light and dark (mirrors the lifecycle in core/state.py's faults).
 _FAULT_BADGE = {
-    "open":      ("#ffebee", "#c62828"),
-    "healing":   ("#fff8e1", "#ef6c00"),
-    "escalated": ("#fce4ec", "#ad1457"),
-    "resolved":  ("#e8f5e9", "#2e7d32"),
+    "open":      "badge-danger",
+    "healing":   "badge-warning",
+    "escalated": "badge-danger",
+    "resolved":  "badge-success",
 }
 
 
-def _kpi(label, value, sub="", accent="#2c3e50"):
+def _kpi(label, value, sub="", accent="var(--ink)"):
     """One big-number card for the KPI rows."""
-    sub_html = f'<div style="color:#999;font-size:12px;margin-top:3px;">{sub}</div>' if sub else ""
-    return (f'<div style="background:white;border-radius:10px;padding:18px 20px;'
-            f'box-shadow:0 2px 6px rgba(0,0,0,0.06);flex:1;min-width:150px;">'
-            f'<div style="color:#777;font-size:13px;">{label}</div>'
-            f'<div style="color:{accent};font-size:26px;font-weight:bold;margin-top:4px;">{value}</div>'
+    sub_html = f'<div class="meta" style="margin-top:3px;">{sub}</div>' if sub else ""
+    return (f'<div class="panel" style="flex:1;min-width:150px;padding:18px 20px;margin-bottom:0;">'
+            f'<div class="muted" style="font-size:13px;">{label}</div>'
+            f'<div style="color:{accent};font-size:26px;font-weight:600;'
+            f'letter-spacing:-0.02em;margin-top:4px;">{value}</div>'
             f'{sub_html}</div>')
 
 
 def _fault_row(f):
     """One open fault as a table row (every field escaped)."""
-    bg, fg = _FAULT_BADGE.get(f["status"], ("#eee", "#555"))
-    status_badge = (f'<span style="background:{bg};color:{fg};padding:2px 8px;'
-                    f'border-radius:10px;font-size:12px;">{html.escape(f["status"])}</span>')
+    badge_cls = _FAULT_BADGE.get(f["status"], "")
+    status_badge = (f'<span class="badge {badge_cls}">{html.escape(f["status"])}</span>')
     return (
-        '<tr style="border-bottom:1px solid #eee;font-size:14px;">'
-        f'<td style="padding:10px;white-space:nowrap;">#{f["id"]} {status_badge}</td>'
-        f'<td style="padding:10px;">{html.escape(f["kind"] or "")}</td>'
-        f'<td style="padding:10px;">{html.escape(f["step"] or "")}</td>'
-        f'<td style="padding:10px;">{html.escape(f["subject"] or "—")}</td>'
-        f'<td style="padding:10px;color:#666;">{html.escape((f["detail"] or "")[:90])}</td>'
-        f'<td style="padding:10px;">{html.escape(f["action"] or "—")}</td>'
-        f'<td style="padding:10px;text-align:center;">{f["attempts"]}</td>'
+        '<tr>'
+        f'<td style="white-space:nowrap;">#{f["id"]} {status_badge}</td>'
+        f'<td>{html.escape(f["kind"] or "")}</td>'
+        f'<td>{html.escape(f["step"] or "")}</td>'
+        f'<td>{html.escape(f["subject"] or "—")}</td>'
+        f'<td class="muted">{html.escape((f["detail"] or "")[:90])}</td>'
+        f'<td>{html.escape(f["action"] or "—")}</td>'
+        f'<td style="text-align:center;">{f["attempts"]}</td>'
         '</tr>'
     )
 
@@ -575,7 +588,8 @@ def health():
 
     t = m["totals"]
     ue = m["unit_economics"]
-    err_color = "#c62828" if t["error_rate"] > 0.1 else ("#ef6c00" if t["error_rate"] > 0 else "#2e7d32")
+    err_color = ("var(--danger)" if t["error_rate"] > 0.1
+                 else ("var(--warning)" if t["error_rate"] > 0 else "var(--success)"))
 
     kpis = (
         _kpi("Events", f'{t["events"]:,}', f'{t["ok"]} ok · {t["skipped"]} skipped')
@@ -593,26 +607,25 @@ def health():
 
     if counts:
         pills = " ".join(
-            f'<span style="background:{_FAULT_BADGE.get(s, ("#eee", "#555"))[0]};'
-            f'color:{_FAULT_BADGE.get(s, ("#eee", "#555"))[1]};padding:5px 13px;border-radius:12px;'
-            f'font-size:13px;font-weight:bold;margin-right:8px;">{html.escape(s)}: {c}</span>'
+            f'<span class="badge {_FAULT_BADGE.get(s, "")}" style="margin-right:6px;">'
+            f'{html.escape(s)}: {c}</span>'
             for s, c in sorted(counts.items()))
     else:
-        pills = '<span style="color:#999;">No faults recorded — clean run. 🎉</span>'
+        pills = '<span class="muted">No faults recorded — clean run. 🎉</span>'
 
     if faults:
         frows = "".join(_fault_row(f) for f in faults)
         faults_table = (
             '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;'
-            'background:white;border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,0.06);overflow:hidden;">'
-            '<tr style="text-align:left;color:#777;font-size:13px;background:#fafafa;">'
+            ''
+            '<tr>'
             '<th style="padding:10px;">Fault</th><th style="padding:10px;">Kind</th>'
             '<th style="padding:10px;">Step</th><th style="padding:10px;">Subject</th>'
             '<th style="padding:10px;">Detail</th><th style="padding:10px;">Action</th>'
             '<th style="padding:10px;">Tries</th></tr>'
             f'{frows}</table></div>')
     else:
-        faults_table = '<p style="color:#999;">No open faults — the healer has nothing to work. ✅</p>'
+        faults_table = '<p class="muted">No open faults — the healer has nothing to work. ✅</p>'
 
     steps = m["by_step"]
     if steps:
@@ -620,9 +633,9 @@ def health():
         for name_, s in sorted(steps.items()):
             tok = s["prompt_tokens"] + s["completion_tokens"]
             avg = (s["duration_ms"] / s["events"]) if s["events"] else 0
-            ecolor = "#c62828" if s["error"] else "#333"
+            ecolor = "var(--danger)" if s["error"] else "var(--ink)"
             srows += (
-                '<tr style="border-bottom:1px solid #eee;font-size:14px;">'
+                '<tr>'
                 f'<td style="padding:10px;font-weight:bold;">{html.escape(name_)}</td>'
                 f'<td style="padding:10px;">{s["events"]}</td>'
                 f'<td style="padding:10px;">{s["ok"]}</td>'
@@ -632,19 +645,19 @@ def health():
                 f'<td style="padding:10px;">{avg:.0f} ms</td></tr>')
         steps_table = (
             '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;'
-            'background:white;border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,0.06);overflow:hidden;">'
-            '<tr style="text-align:left;color:#777;font-size:13px;background:#fafafa;">'
+            ''
+            '<tr>'
             '<th style="padding:10px;">Step</th><th style="padding:10px;">Events</th>'
             '<th style="padding:10px;">OK</th><th style="padding:10px;">Error</th>'
             '<th style="padding:10px;">Tokens</th><th style="padding:10px;">Cost</th>'
             '<th style="padding:10px;">Avg time</th></tr>'
             f'{srows}</table></div>')
     else:
-        steps_table = ('<p style="color:#999;">No steps recorded yet. Run the agents (draft / '
+        steps_table = ('<p class="muted">No steps recorded yet. Run the agents (draft / '
                        'reply / send) and they\'ll show up here.</p>')
 
     def _section(title):
-        return f'<h2 style="color:#2c3e50;font-size:18px;margin:34px 0 12px;">{title}</h2>'
+        return f'<h2 style="margin:34px 0 12px;">{title}</h2>'
 
     row_style = 'display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px;'
 
@@ -659,35 +672,33 @@ def health():
                    (f'of ${cap:.2f} daily cap' if cap else 'uncapped'))
             + _kpi("Remaining today", (f'${rem:.4f}' if rem is not None else '∞'),
                    ("premium active" if allowed else "cap hit — free fallback"),
-                   "#2e7d32" if allowed else "#ef6c00")
+                   "var(--success)" if allowed else "var(--warning)")
         )
         premium_section = (
             _section("💎 Premium copy (real Claude)")
             + f'<div style="{row_style}">{prem_kpis}</div>'
-            + '<p style="color:#999;font-size:13px;margin-top:6px;">Real-Claude copy spend is '
+            + '<p class="meta" style="margin-top:6px;">Real-Claude copy spend is '
               'reconstructed from the ledger and capped per day; once the cap is hit, drafting '
               'auto-falls back to the free provider chain.</p>')
     else:
         premium_section = (
             _section("💎 Premium copy")
-            + '<p style="color:#999;">Off — drafting uses the free provider chain. Set '
+            + '<p class="muted">Off — drafting uses the free provider chain. Set '
               '<code>copy.premium</code> in the client config to route copy to real Claude.</p>')
 
-    return f"""<html><head><title>{client_label} — Pipeline Health</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1"></head>
-    <body style="font-family:Arial,sans-serif;background:#f4f7f6;margin:0;padding:0;color:#333;">
-      <div style="max-width:960px;margin:0 auto;padding:40px 20px;">
-        <p style="margin:0 0 4px;">
-          <a href="/" style="color:#0056b3;text-decoration:none;">← Approval queue</a> &nbsp;·&nbsp;
-          <a href="/appointments" style="color:#0056b3;text-decoration:none;">📅 Appointments</a></p>
-        <h1 style="color:#2c3e50;margin-bottom:4px;">🩺 {client_label} — Pipeline Health</h1>
-        <p style="color:#777;margin-top:0;">Every step is metered in the ledger; the observer flags
+    inner = f"""
+      <div class="wrap" style="max-width:980px;">
+        <p style="margin:0 0 10px;">
+          <a href="/">← Approval queue</a> &nbsp;·&nbsp;
+          <a href="/appointments">📅 Appointments</a></p>
+        <h1>🩺 Pipeline Health</h1>
+        <p class="muted" style="margin:6px 0 24px;">Every step is metered in the ledger; the observer flags
            missteps and the healer works them automatically, escalating to you only when it can't.</p>
         {_section("📊 Throughput &amp; spend")}
         <div style="{row_style}">{kpis}</div>
         {_section("💰 Unit economics")}
         <div style="{row_style}">{econ}</div>
-        <p style="color:#999;font-size:13px;margin-top:6px;">Cost is <b>notional</b> — free providers
+        <p class="meta" style="margin-top:8px;">Cost is <b>notional</b> — free providers
            are $0; set a reference rate + margin in <code>observability.cost</code> to price clients.</p>
         {premium_section}
         {_section("🚑 Faults")}
@@ -695,8 +706,8 @@ def health():
         {faults_table}
         {_section("🪜 By step")}
         {steps_table}
-      </div>
-    </body></html>""", 200
+      </div>"""
+    return theme.shell(f"{client_label} — Pipeline Health", inner), 200
 
 
 @app.route('/magnet/<client>/<token>')
