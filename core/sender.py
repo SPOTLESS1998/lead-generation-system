@@ -20,10 +20,16 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 from . import state
+from . import verify
 
 
 class SendCapExceeded(Exception):
     """Raised when a send would exceed a per-mailbox or global daily cap."""
+
+
+class UnverifiedRecipient(Exception):
+    """Raised when the recipient has been PROVEN undeliverable (or, when the
+    operator opts into block_on_unknown, could not be verified)."""
 
 
 class SendError(Exception):
@@ -79,6 +85,7 @@ class SendingPool:
         self.from_name = client_cfg.get("from_name") or client_cfg.get("client_name", "")
         self.reply_to = client_cfg.get("reply_to")
         self.warmup = s.get("warmup") or {}
+        self.verify_cfg = s.get("verify_recipients") or {}
 
     # --- warmup ------------------------------------------------------------
     # A new sending domain that opens at full volume gets filtered. Google's own
@@ -170,6 +177,20 @@ class SendingPool:
         time.sleep(delay)
         return delay
 
+    # --- recipient verification --------------------------------------------
+
+    def verify_recipient(self, conn, to_email):
+        """The mail-route verdict for a logical recipient, or None when off."""
+        vc = self.verify_cfg
+        if not vc.get("enabled", True):
+            return None
+        return verify.verify_email(
+            to_email, conn,
+            timeout=float(vc.get("timeout_seconds", 5)),
+            ttl_days=int(vc.get("ttl_days", 30)),
+            invalid_ttl_days=int(vc.get("invalid_ttl_days", 7)),
+        )
+
     # --- send --------------------------------------------------------------
 
     def send(self, conn, to_email, subject, body_text,
@@ -199,6 +220,19 @@ class SendingPool:
         mailbox = self.pick_mailbox(conn)
         if mailbox is None:
             raise SendCapExceeded("all mailboxes are at their daily cap")
+
+        # Recipient verification — the last gate before the wire. Checked against
+        # the LOGICAL recipient, never `actual_to`: in controlled mode actual_to is
+        # our own safe inbox, which is trivially valid, so verifying it would
+        # rubber-stamp every address and the check would quietly do nothing.
+        #
+        # This blocks only what has been PROVEN undeliverable. An UNKNOWN verdict
+        # (DNS timeout, blocked resolver, no dig) means we learned nothing about the
+        # recipient and sends proceed — see the rule at the top of core/verify.py.
+        verdict = self.verify_recipient(conn, to_email)
+        if verdict and verify.should_block(verdict, self.verify_cfg.get("block_on_unknown", False)):
+            raise UnverifiedRecipient(
+                f"{to_email}: {verdict['status']} — {verdict['reason']}")
 
         # Controlled mode: deliver to the safe inbox, but remember who it was *for*.
         actual_to = to_email

@@ -171,6 +171,20 @@ DEFAULTS = {
                 {"through_day": 30, "cap": 40},
             ],
         },
+        "verify_recipients": {               # refuse provably-undeliverable addresses (core/verify.py)
+            "enabled": True,
+            "timeout_seconds": 5,            # per DNS query
+            "ttl_days": 30,                  # how long an 'ok' domain is trusted
+            "invalid_ttl_days": 7,           # 'invalid' is re-checked far sooner: a domain
+                                             # mid-DNS-migration must not be written off for
+                                             # a month on one bad afternoon
+            "block_on_unknown": False,       # KEEP FALSE unless you know why. 'unknown' means
+                                             # OUR lookup failed (timeout, blocked resolver),
+                                             # not that the recipient is bad. Blocking on it
+                                             # would let a flaky network mark an entire
+                                             # prospect list undeliverable while looking
+                                             # exactly like diligence.
+        },
     },
     "circuit_breaker": {                      # skip a provider that keeps failing instead of
         "enabled": True,                      # re-paying its timeout/retries on every call (core/ai.py)

@@ -139,12 +139,34 @@
     "warmup": {
       "enabled": true,
       "ramp": [
-        { "through_day": 3, "cap": 5 },
-        { "through_day": 7, "cap": 10 },
-        { "through_day": 14, "cap": 20 },
-        { "through_day": 21, "cap": 30 },
-        { "through_day": 30, "cap": 40 }
+        {
+          "through_day": 3,
+          "cap": 5
+        },
+        {
+          "through_day": 7,
+          "cap": 10
+        },
+        {
+          "through_day": 14,
+          "cap": 20
+        },
+        {
+          "through_day": 21,
+          "cap": 30
+        },
+        {
+          "through_day": 30,
+          "cap": 40
+        }
       ]
+    },
+    "verify_recipients": {
+      "enabled": true,
+      "timeout_seconds": 5,
+      "ttl_days": 30,
+      "invalid_ttl_days": 7,
+      "block_on_unknown": false
     }
   },
   "service_outcomes": {

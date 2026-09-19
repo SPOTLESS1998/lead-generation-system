@@ -41,6 +41,7 @@ from urllib.parse import urljoin, urlparse
 from core.leads import FIELDS, _looks_like_email
 from core import leads as leads_mod
 from core import state
+from core import verify
 from core.ai import generate_json, DEFAULT_PROVIDERS
 from core import budget
 
@@ -332,12 +333,12 @@ def _clean_email(raw):
 # blocklisted by the receiving providers. One placeholder address is a small leak, but
 # nothing downstream can fix it — by the time it reaches the sender the damage is the
 # bounce — so it has to be refused at the door, where the address is first read.
-_PLACEHOLDER_DOMAINS = (
-    "example.com", "example.org", "example.net", "example.edu",
-    "test.com", "test.org", "test.net",
-    "invalid", "localhost", "domain.com", "email.com",
-    "yourdomain.com", "yourcompany.com", "sentry.io", "wixpress.com",
-)
+#
+# The list and the test now live in core/verify.py, which is also what gates the
+# SEND path. They were duplicated; two copies of a blocklist drift, and a drift
+# here is invisible until something bounces. These names are kept as thin
+# delegations so this module's call sites and tests read unchanged.
+_PLACEHOLDER_DOMAINS = verify.PLACEHOLDER_DOMAINS
 
 
 def _is_placeholder_email(e):
@@ -349,26 +350,9 @@ def _is_placeholder_email(e):
     already decides what to do with it. Folding "no email" in here would silently
     drop those businesses, which is exactly the regression this docstring prevents.
 
-    Beyond that, deliberately narrow: a handful of reserved/boilerplate domains plus
-    the obvious malformed cases. A broader "looks fake" heuristic would start
-    rejecting real small-business addresses, and a missed lead is invisible while a
-    bounce is not.
+    Deliberately narrow: see core/verify.is_placeholder, which this delegates to.
     """
-    if e is None or not str(e).strip():
-        return False                                 # absent, not fake
-    e = str(e).strip()
-    if "@" not in e:
-        return True
-    local, _, domain = e.rpartition("@")
-    if not local.strip():
-        return True                                  # "@host.com" has no recipient
-    domain = domain.strip().lower().strip(".")       # "a@b.com." -> "b.com"
-    if not domain or "." not in domain:
-        return True                                  # no TLD: cannot resolve
-    if domain in _PLACEHOLDER_DOMAINS:
-        return True
-    # Subdomains of a reserved domain (e.g. mail.example.com) are equally unroutable.
-    return any(domain.endswith("." + d) for d in _PLACEHOLDER_DOMAINS)
+    return verify.is_placeholder(e)
 
 
 def _coerce_str(val):

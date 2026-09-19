@@ -5,7 +5,6 @@
   "website_url": "",
   "physical_address": "REPLACE-ME: Street, City, Country (required by CAN-SPAM before real sends)",
   "unsubscribe_base_url": "http://localhost:5001",
-
   "offerings": [
     "REPLACE-ME Service One",
     "REPLACE-ME Service Two"
@@ -14,7 +13,6 @@
     "REPLACE-ME Service One": "REPLACE-ME the concrete result, with a real figure and timeframe (e.g. 'cut response time 50% within 60 days')",
     "REPLACE-ME Service Two": "REPLACE-ME the concrete result, with a real figure and timeframe"
   },
-
   "lead_source": "csv",
   "drafting": {
     "daily_cap": 10
@@ -29,9 +27,12 @@
       "queries_per_run": 4
     }
   },
-
   "copy_provider": "gemini",
-  "providers": ["freellmapi", "gemini", "nvidia"],
+  "providers": [
+    "freellmapi",
+    "gemini",
+    "nvidia"
+  ],
   "gemini_model": "gemini-2.5-flash",
   "nvidia_model": "mistralai/mistral-nemotron",
   "freellmapi_model": null,
@@ -50,7 +51,11 @@
   },
   "reminders": {
     "enabled": true,
-    "lead_times_min": [60, 30, 15],
+    "lead_times_min": [
+      60,
+      30,
+      15
+    ],
     "poll_seconds": 60,
     "email": true,
     "desktop": true
@@ -74,7 +79,10 @@
     "mode": "controlled",
     "controlled_inbox_env": "SMTP_USER",
     "daily_global_cap": 50,
-    "throttle_seconds": { "min": 20, "max": 60 },
+    "throttle_seconds": {
+      "min": 20,
+      "max": 60
+    },
     "mailboxes": [
       {
         "smtp_host": "smtp.gmail.com",
@@ -87,12 +95,34 @@
     "warmup": {
       "enabled": true,
       "ramp": [
-        { "through_day": 3, "cap": 5 },
-        { "through_day": 7, "cap": 10 },
-        { "through_day": 14, "cap": 20 },
-        { "through_day": 21, "cap": 30 },
-        { "through_day": 30, "cap": 40 }
+        {
+          "through_day": 3,
+          "cap": 5
+        },
+        {
+          "through_day": 7,
+          "cap": 10
+        },
+        {
+          "through_day": 14,
+          "cap": 20
+        },
+        {
+          "through_day": 21,
+          "cap": 30
+        },
+        {
+          "through_day": 30,
+          "cap": 40
+        }
       ]
+    },
+    "verify_recipients": {
+      "enabled": true,
+      "timeout_seconds": 5,
+      "ttl_days": 30,
+      "invalid_ttl_days": 7,
+      "block_on_unknown": false
     }
   },
   "target_niches": []

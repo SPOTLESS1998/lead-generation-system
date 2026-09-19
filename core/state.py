@@ -12,6 +12,7 @@ Tables:
   pipeline_events — observability ledger: one row per pipeline step (status,
                 duration, tokens, cost) that powers self-healing + accounting
   faults      — flagged problems + how they were healed or escalated
+  mx_checks   — cached per-domain mail-route verdicts (see core/verify.py)
 
 WAL mode is enabled so the agent and the Flask approval server can both touch
 the same DB safely. connect() runs a tiny idempotent migration so DBs created
@@ -21,7 +22,7 @@ before Tier 2 gain the new column/tables without losing data.
 import json
 import sqlite3
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from .leads import domain_key
 
@@ -239,6 +240,13 @@ CREATE TABLE IF NOT EXISTS run_quality (
     median_score      REAL,
     first_pass_score  REAL,           -- mean score BEFORE any revision
     created_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mx_checks (
+    domain     TEXT PRIMARY KEY,   -- mail route is a property of the DOMAIN, not the address
+    status     TEXT NOT NULL,      -- ok | invalid  (UNKNOWN is deliberately never stored)
+    reason     TEXT,
+    checked_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sends_client_mailbox_day ON sends(client, mailbox, sent_at);
@@ -506,6 +514,49 @@ def first_send_at(conn, client, mailbox=None, live_only=False):
         f"SELECT MIN(sent_at) AS t FROM sends WHERE {where}", tuple(args)
     ).fetchone()
     return row["t"] if row and row["t"] else None
+
+
+def get_mx_check(conn, domain, ttl_days=30, invalid_ttl_days=7):
+    """A cached mail-route verdict for `domain`, or None if absent/stale.
+
+    Two TTLs on purpose. An 'ok' domain is stable, so it is trusted for
+    ttl_days. An 'invalid' one is re-checked far sooner: a business that has
+    just moved its DNS, or whose MX was mid-migration when we looked, must not
+    be written off for a month on the strength of one bad afternoon. Cheap to
+    re-ask, expensive to be wrong.
+    """
+    if not domain:
+        return None
+    row = conn.execute(
+        "SELECT domain, status, reason, checked_at FROM mx_checks WHERE domain=?",
+        (domain.lower(),),
+    ).fetchone()
+    if not row:
+        return None
+    ttl = invalid_ttl_days if row["status"] == "invalid" else ttl_days
+    try:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(row["checked_at"])
+    except Exception:
+        return None                      # unparseable timestamp: treat as stale
+    if age > timedelta(days=ttl):
+        return None
+    return {"domain": row["domain"], "status": row["status"],
+            "reason": row["reason"], "checked_at": row["checked_at"]}
+
+
+def record_mx_check(conn, domain, status, reason=""):
+    """Cache a mail-route verdict. Callers must never pass 'unknown' — it is a
+    statement about a moment's network, not about the domain, and storing it
+    would freeze a brief outage into a multi-week verdict."""
+    if not domain or status not in ("ok", "invalid"):
+        return
+    conn.execute(
+        "INSERT INTO mx_checks (domain, status, reason, checked_at) VALUES (?,?,?,?) "
+        "ON CONFLICT(domain) DO UPDATE SET status=excluded.status, "
+        "reason=excluded.reason, checked_at=excluded.checked_at",
+        (domain.lower(), status, reason or "", _now()),
+    )
+    conn.commit()
 
 
 def sends_today(conn, client, mailbox=None):
