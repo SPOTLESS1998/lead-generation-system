@@ -14,6 +14,7 @@ import html
 import time
 import random
 import smtplib
+from datetime import datetime, timezone
 from email.utils import make_msgid
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -77,6 +78,71 @@ class SendingPool:
         self.throttle_max = float(thr.get("max", 60))
         self.from_name = client_cfg.get("from_name") or client_cfg.get("client_name", "")
         self.reply_to = client_cfg.get("reply_to")
+        self.warmup = s.get("warmup") or {}
+
+    # --- warmup ------------------------------------------------------------
+    # A new sending domain that opens at full volume gets filtered. Google's own
+    # guidance is to "start with a low sending volume to engaged users, and slowly
+    # increase the volume over time" and to "send email at a consistent rate;
+    # avoid sending email in bursts". Before this, daily_cap was FLAT — whatever
+    # the config said was allowed on day one, so the ramp existed only in an
+    # operator's memory and discipline. Now it is enforced by the code.
+    #
+    # The ramp VALUES live in client config (a business decision, per
+    # MULTITENANCY.md); only the mechanics are here.
+
+    def _warmup_day(self, conn, mailbox_address):
+        """1-based day number for this mailbox. Day 1 = its first-ever LIVE send day.
+
+        live_only=True is load-bearing: controlled-mode sends go to our own safe
+        inbox, so they must not age the domain. Counting them would mean a fortnight
+        of testing leaves the ramp reporting "day 15" on a domain no stranger has
+        ever received mail from.
+        """
+        first = state.first_send_at(conn, self.client, mailbox_address, live_only=True)
+        if not first:
+            return 1                      # nothing live yet: this is day one
+        try:
+            start = datetime.fromisoformat(first).date()
+        except Exception:
+            # An unparseable timestamp must not silently unlock full volume; treat
+            # it as day one, the most restrictive reading.
+            return 1
+        return max(1, (datetime.now(timezone.utc).date() - start).days + 1)
+
+    def warmup_cap(self, conn, mailbox):
+        """The cap actually in force for this mailbox today.
+
+        Returns the mailbox's configured daily_cap when warmup is off, not
+        configured, or already finished. Never returns more than daily_cap — the
+        ramp can only ever hold volume DOWN, so a misconfigured ramp cannot
+        silently raise a limit the operator set.
+        """
+        hard = int(mailbox.get("daily_cap", 0))
+        ramp = self.warmup.get("ramp") or []
+        if not self.warmup.get("enabled") or not ramp:
+            return hard
+        day = self._warmup_day(conn, mailbox.get("address"))
+        for step in sorted(ramp, key=lambda r: int(r.get("through_day", 0))):
+            if day <= int(step.get("through_day", 0)):
+                return max(0, min(hard, int(step.get("cap", hard))))
+        return hard                       # past the last step: fully warmed
+
+    def warmup_status(self, conn):
+        """Per-mailbox readout for the operator: day, cap in force, used, left."""
+        out = []
+        for m in self.mailboxes:
+            cap = self.warmup_cap(conn, m)
+            used = state.sends_today(conn, self.client, m["address"])
+            out.append({
+                "address": m.get("address"),
+                "day": self._warmup_day(conn, m.get("address")),
+                "cap_today": cap,
+                "hard_cap": int(m.get("daily_cap", 0)),
+                "used": used,
+                "left": max(0, cap - used),
+            })
+        return out
 
     # --- capacity ----------------------------------------------------------
 
@@ -84,7 +150,7 @@ class SendingPool:
         """How many more sends are allowed today, min of global and pooled caps."""
         global_left = max(0, self.global_cap - state.sends_today(conn, self.client))
         pool_left = sum(
-            max(0, m["daily_cap"] - state.sends_today(conn, self.client, m["address"]))
+            max(0, self.warmup_cap(conn, m) - state.sends_today(conn, self.client, m["address"]))
             for m in self.mailboxes
         )
         return min(global_left, pool_left)
@@ -93,7 +159,7 @@ class SendingPool:
         """The eligible mailbox with the fewest sends today (spreads load); None if all capped."""
         eligible = [
             m for m in self.mailboxes
-            if state.sends_today(conn, self.client, m["address"]) < m["daily_cap"]
+            if state.sends_today(conn, self.client, m["address"]) < self.warmup_cap(conn, m)
         ]
         if not eligible:
             return None

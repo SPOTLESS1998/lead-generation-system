@@ -480,6 +480,34 @@ def record_send(conn, client, lead_email, mailbox, subject, redirected_to=None, 
     conn.commit()
 
 
+def first_send_at(conn, client, mailbox=None, live_only=False):
+    """ISO timestamp of the earliest send, overall or for ONE mailbox — or None.
+
+    Per-mailbox on purpose: it is what the warmup ramp counts days from, and a
+    mailbox added in month three must warm from ITS OWN first send rather than
+    inherit the pool's age. Sending a brand-new mailbox 40/day on day one because
+    a sibling has been running for weeks is exactly how a domain gets filtered.
+
+    `live_only` excludes controlled-mode sends (those have a `redirected_to`, i.e.
+    they were delivered to our own safe inbox, not to the prospect). The warmup
+    ramp MUST pass it. Otherwise two weeks of controlled testing would age the
+    domain on paper — flip to live and the ramp reports "day 15" and opens at
+    near-full volume on a domain that has never sent a single real email. The
+    clock has to start at the first message that actually reached a stranger.
+    """
+    where = "client=?"
+    args = [client]
+    if mailbox is not None:
+        where += " AND mailbox=?"
+        args.append(mailbox)
+    if live_only:
+        where += " AND redirected_to IS NULL"
+    row = conn.execute(
+        f"SELECT MIN(sent_at) AS t FROM sends WHERE {where}", tuple(args)
+    ).fetchone()
+    return row["t"] if row and row["t"] else None
+
+
 def sends_today(conn, client, mailbox=None):
     """Count sends so far today (UTC), overall or for one mailbox."""
     if mailbox is not None:

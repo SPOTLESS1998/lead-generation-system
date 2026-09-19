@@ -583,6 +583,31 @@ def health():
         counts = state.fault_counts(conn, client)
         faults = state.open_faults(conn, client, limit=50)
         bstat = budget.status(conn, cfg)
+
+        # EVERY database read for this page must happen HERE, inside the one
+        # try/finally, because `conn` is closed the moment it exits. Reads placed
+        # below it do not error visibly — they raise "Cannot operate on a closed
+        # database", get caught by their own except, and render the section's
+        # empty state. The page then says "no data yet" while the data sits in
+        # the table. That is exactly how the quality scorecard shipped silently
+        # blank. Gather here; render below.
+        try:
+            hist = state.run_quality_history(conn, client, limit=10)
+            trend = state.quality_trend(conn, client)
+        except Exception:
+            hist, trend = [], None
+        try:
+            proposed = state.list_lessons(conn, client, status="proposed", limit=20)
+            active = state.approved_lessons(conn, client, limit=20)
+        except Exception:
+            proposed, active = [], []
+        try:
+            pool = sender.SendingPool(cfg)
+            warm = pool.warmup_status(conn)
+            warm_on = bool((cfg["sending"].get("warmup") or {}).get("enabled"))
+            remaining = pool.remaining_today(conn)
+        except Exception:
+            warm, warm_on, remaining = [], False, None
     finally:
         conn.close()
 
@@ -690,12 +715,7 @@ def health():
     # The ledger above says what the pipeline SPENT. This says whether what it
     # produced is getting better, which is a different question and the one that
     # matters for a system meant to compound rather than plateau.
-    try:
-        hist = state.run_quality_history(conn, client, limit=10)
-        trend = state.quality_trend(conn, client)
-    except Exception:
-        hist, trend = [], None
-
+    # (`hist`/`trend` were read above, while the connection was still open.)
     if hist:
         latest = hist[0]
         tcolor, tlabel = "var(--ink)", "not enough runs yet"
@@ -738,11 +758,7 @@ def health():
               'better or quietly getting worse.</p>')
 
     # Lessons the reflection pass has proposed, and what is actually live.
-    try:
-        proposed = state.list_lessons(conn, client, status="proposed", limit=20)
-        active = state.approved_lessons(conn, client, limit=20)
-    except Exception:
-        proposed, active = [], []
+    # (`proposed`/`active` were read above, while the connection was still open.)
     lesson_rows = ""
     for l in proposed:
         lesson_rows += ('<tr><td><span class="badge badge-warning">awaiting you</span></td>'
@@ -764,6 +780,42 @@ def health():
             + '<p class="muted">None yet. Run <code>scripts/reflect_copy.py</code> once '
               'there are a few runs of critiques for it to read.</p>')
 
+    # Sending capacity: what the ramp allows TODAY, per mailbox. The single number
+    # an operator needs before flipping to live — and the one place a stalled or
+    # mis-set ramp becomes visible rather than being discovered as a silent
+    # "all mailboxes are at their daily cap" in a cron log.
+    # (`warm`/`warm_on`/`remaining` were read above, while the connection was open.)
+    if warm:
+        wrows = ""
+        for w in warm:
+            ramped = w["cap_today"] < w["hard_cap"]
+            badge = ('<span class="badge badge-warning">warming</span>' if ramped
+                     else '<span class="badge badge-success">full volume</span>')
+            wrows += (f'<tr><td>{badge}</td>'
+                      f'<td>{html.escape(w["address"] or "—")}</td>'
+                      f'<td>{w["day"]}</td>'
+                      f'<td>{w["cap_today"]} <span class="muted">/ {w["hard_cap"]}</span></td>'
+                      f'<td>{w["used"]}</td><td>{w["left"]}</td></tr>')
+        mode = cfg["sending"].get("mode")
+        note = ("Warmup is <b>off</b> — every mailbox may send its full daily cap "
+                "immediately. Turn it on in <code>sending.warmup</code> before pointing "
+                "a NEW domain at real prospects." if not warm_on else
+                "Day 1 is the first <b>live</b> send. Controlled-mode sends go to your own "
+                "inbox and deliberately do not age the domain, so the ramp starts when real "
+                "mail does. The ramp can only hold volume down, never raise a cap.")
+        warmup_section = (
+            _section("🌡️ Sending capacity &amp; warmup")
+            + f'<p class="meta" style="margin:0 0 12px;">mode <b>{html.escape(str(mode))}</b>'
+              f' · {remaining if remaining is not None else "—"} send(s) allowed today.'
+              f' {note}</p>'
+            + '<div class="panel" style="overflow-x:auto;padding:6px 14px;"><table>'
+              '<tr><th></th><th>Mailbox</th><th>Day</th><th>Cap today</th>'
+              '<th>Used</th><th>Left</th></tr>' + wrows + '</table></div>')
+    else:
+        warmup_section = (
+            _section("🌡️ Sending capacity &amp; warmup")
+            + '<p class="muted">No sending mailboxes resolved.</p>')
+
     inner = f"""
       <div class="wrap" style="max-width:980px;">
         <p style="margin:0 0 10px;">
@@ -781,6 +833,7 @@ def health():
         {premium_section}
         {quality_section}
         {lessons_section}
+        {warmup_section}
         {_section("🚑 Faults")}
         <p style="margin:0 0 14px;">{pills}</p>
         {faults_table}

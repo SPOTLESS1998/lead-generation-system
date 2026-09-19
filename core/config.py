@@ -152,6 +152,25 @@ DEFAULTS = {
         "daily_global_cap": 50,
         "throttle_seconds": {"min": 20, "max": 60},
         "mailboxes": [],                     # see _resolve_mailbox for the shape
+        "warmup": {                          # ramp a NEW sending domain up slowly (core/sender.py)
+            "enabled": False,                # opt in per client; see clients/README.md
+            # Mailbox-scoped, counted from its first LIVE send (controlled-mode test
+            # sends deliberately do NOT age it). Each step caps every day up to and
+            # including `through_day`; past the last step the mailbox's own daily_cap
+            # applies. The ramp can only ever hold volume DOWN — it never raises a cap
+            # the operator set, so a bad ramp cannot silently widen the tap.
+            #
+            # These numbers are generic deliverability practice, not a business fact:
+            # Google asks senders to "start with a low sending volume" and "increase
+            # the volume slowly", avoiding bursts. Override per client if needed.
+            "ramp": [
+                {"through_day": 3,  "cap": 5},
+                {"through_day": 7,  "cap": 10},
+                {"through_day": 14, "cap": 20},
+                {"through_day": 21, "cap": 30},
+                {"through_day": 30, "cap": 40},
+            ],
+        },
     },
     "circuit_breaker": {                      # skip a provider that keeps failing instead of
         "enabled": True,                      # re-paying its timeout/retries on every call (core/ai.py)

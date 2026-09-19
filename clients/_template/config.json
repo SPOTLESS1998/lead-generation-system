@@ -83,7 +83,17 @@
         "pass_env": "SMTP_PASS",
         "daily_cap": 40
       }
-    ]
+    ],
+    "warmup": {
+      "enabled": true,
+      "ramp": [
+        { "through_day": 3, "cap": 5 },
+        { "through_day": 7, "cap": 10 },
+        { "through_day": 14, "cap": 20 },
+        { "through_day": 21, "cap": 30 },
+        { "through_day": 30, "cap": 40 }
+      ]
+    }
   },
   "target_niches": []
 }
