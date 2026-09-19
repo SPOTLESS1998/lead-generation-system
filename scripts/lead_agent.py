@@ -267,7 +267,7 @@ def generate_copy(cfg, lead, strategy_brief, magnet_url=None):
     STRATEGY BRIEF — ground every line in this; do not invent facts beyond it:
     {strategy_brief}
 
-    {quality.copy_instructions(sender_name, magnet_url, thin_evidence=thin)}
+    {quality.copy_instructions(sender_name, magnet_url, thin_evidence=thin, lessons=cfg.get('_lessons'))}
 
     Reply with ONLY this JSON, no prose and no markdown fences:
     {{"subject": "<subject, WITHOUT a 'Subject:' prefix>", "body": "<full body, greeting through sign-off, using real newlines>"}}
@@ -312,6 +312,16 @@ def draft_one_lead(conn, cfg, lead, run_id):
     # and the quality gate all use gen_cfg so their tokens count toward the cap; the
     # magnet page stays on the free chain (plain cfg) to control spend.
     gen_cfg = budget.copy_cfg(conn, cfg)
+    # Human-APPROVED lessons only (state.approved_lessons filters on status).
+    # Carried on the cfg because the drafter and reviser are called through a
+    # fixed signature that has no DB handle, and threading one through both just
+    # to read a short list would spread state/IO into the copy modules.
+    try:
+        gen_cfg = dict(gen_cfg)
+        gen_cfg["_lessons"] = state.approved_lessons(conn, cfg["client"])
+    except Exception:
+        pass
+
     with obs.track(conn, cfg, "draft", subject=lead["email"], run_id=run_id):
         # Pick the best-fitting offering from our CLOSED menu before drafting. The
         # segment tag is only how they were sourced; re-judging from their real facts
@@ -337,8 +347,16 @@ def draft_one_lead(conn, cfg, lead, run_id):
             magnet_url = magnet_token = None
 
         # Draft → score → rewrite weak copy (LLM-as-judge, see core/quality).
+        # Every judge verdict is persisted, including the ones that end in a refusal —
+        # a refused draft is the most informative row we have, because it names the
+        # weakness that stopped it shipping. This is the raw material the reflection
+        # pass mines for recurring lessons (scripts/reflect_copy.py).
+        def _record(attempt, critique, outcome=None):
+            state.record_critique(conn, cfg["client"], lead.get("email"),
+                                  attempt, critique, outcome, run_id=run_id)
+
         subject, body, provider = quality.draft_and_polish(
-            gen_cfg, lead, brief, magnet_url, generate_copy)
+            gen_cfg, lead, brief, magnet_url, generate_copy, on_critique=_record)
     return subject, body, provider, magnet_url, magnet_token
 
 
@@ -571,6 +589,29 @@ def main(preview=False, limit=None):
 
     print(f"\n🎉 Done. Drafted {drafted} pitch(es) awaiting your web approval "
           f"at {cfg.get('unsubscribe_base_url')}.")
+
+    # Quality scorecard for THIS run, plus how it compares to previous ones. Without
+    # this the system could get steadily worse and the only visible signal would be
+    # "it drafted 10 emails", which is true of a good run and a bad one alike.
+    try:
+        summary = state.summarize_run_quality(conn, cfg["client"], run_id)
+        if summary:
+            sc = summary["scores"]
+            mean = round(sum(sc) / len(sc), 1) if sc else "—"
+            print(f"\n📈 [Quality] {summary['attempted']} attempted · "
+                  f"{summary['shipped']} shipped · "
+                  f"{summary['refused_floor']} below floor · "
+                  f"{summary['refused_citation']} refused for citations · "
+                  f"mean score {mean}")
+            trend = state.quality_trend(conn, cfg["client"])
+            if trend and trend["delta_mean_score"] is not None:
+                d = trend["delta_mean_score"]
+                arrow = "▲" if d > 0 else ("▼" if d < 0 else "▬")
+                print(f"   {arrow} mean score {d:+.2f} vs the previous "
+                      f"{trend['prior']['runs']} run(s) "
+                      f"({trend['prior']['mean_score']} → {trend['recent']['mean_score']})")
+    except Exception as e:
+        print(f"⚠️  could not write the quality scorecard: {e}")
 
     # Always-live performance readout: what THIS run actually spent (tokens/cost/time),
     # straight from the ledger. Wrapped so a metrics hiccup can never fail the run.

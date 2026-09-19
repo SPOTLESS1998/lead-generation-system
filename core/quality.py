@@ -394,7 +394,7 @@ def finalize_body(body, sender_name, magnet_url=None):
     return body
 
 
-def copy_instructions(sender_name, magnet_url, thin_evidence=False):
+def copy_instructions(sender_name, magnet_url, thin_evidence=False, lessons=None):
     """The one framework the drafter AND the reviser must follow (kept identical so a
     rewrite is held to the same bar as a first draft). `magnet_url` toggles the link
     rule; `thin_evidence` scales what we ask for to what we can actually prove.
@@ -406,6 +406,13 @@ def copy_instructions(sender_name, magnet_url, thin_evidence=False):
     that, so the rewrite loop pushed for specificity the facts could not supply and
     invention was the only lever left. Asking for less when we know less is not lowering
     the bar; it is removing the incentive to lie.
+
+    `lessons` are HUMAN-APPROVED style rules distilled from the judge's own recurring
+    critiques (see scripts/reflect_copy.py). They are how this writer gets better on
+    run 20 than it was on run 5 instead of relearning the same faults forever. They are
+    appended, never substituted: nothing here can be overridden by a learned rule, and
+    the reflection pass refuses to even PROPOSE a rule containing a number or a proper
+    noun, so a 'lesson' can never smuggle a fact about a prospect into every draft.
     """
     if magnet_url:
         link_rule = (f"Put this exact audit link on its OWN line, written in full and "
@@ -435,6 +442,13 @@ def copy_instructions(sender_name, magnet_url, thin_evidence=False):
             "it says about them. Restating the brief's observation verbatim reads as machine-"
             "assembled; naming the fact AND what it reveals reads human."
         )
+    learned = ""
+    if lessons:
+        # Appended AFTER the fixed framework so a learned rule can only add a
+        # constraint, never relax one above it.
+        bullets = "\n".join(f"- {l}" for l in lessons)
+        learned = ("\nLESSONS FROM YOUR OWN PAST DRAFTS (these are recurring faults an "
+                   "editor flagged; do not repeat them):\n" + bullets + "\n")
     return f"""Follow this framework exactly:
 - Greet them by first name if one is given; if the name is unknown or a generic mailbox, open with exactly "Hi there," — NEVER write a literal placeholder like "Name" or "[First Name]".
 - Sentence 1 — a specific, TRUE, FLATTERING observation about THEIR business, drawn only from the facts you were given (never a generic compliment, never an invented fact). Lead with their strongest, most differentiating fact; NEVER open by highlighting a negative or operational detail (a complaints line, a support/error number, a disclaimer, a problem) — that insults the reader.
@@ -451,7 +465,7 @@ def copy_instructions(sender_name, magnet_url, thin_evidence=False):
 - No buzzwords, no "I hope this finds you well", no "I wanted to reach out", no "in today's fast-paced world", no "leverage/seamless/cutting-edge". Warm, confident, plain.
 - Deliverability: no spam-trigger words (free money, guarantee, act now, limited time, click here, 100%, cash, urgent, risk-free); no ALL-CAPS words; at most one "!"; https links only.
 - Sign off with "Best," on one line, then "{sender_name}" on the next. Never leave a placeholder like "[Your Name]".
-Subject line: specific and curiosity-driving, UNDER 6 words, no clickbait, and with no "Subject:" prefix."""
+{learned}Subject line: specific and curiosity-driving, UNDER 6 words, no clickbait, and with no "Subject:" prefix."""
 
 
 RUBRIC = """Score 1-10, where 10 is a top-1% cold email a sharp founder would actually reply to.
@@ -583,7 +597,7 @@ CURRENT DRAFT:
 Subject: {subject}
 {body}
 
-{copy_instructions(sender_name, magnet_url, thin_evidence=thin)}
+{copy_instructions(sender_name, magnet_url, thin_evidence=thin, lessons=cfg.get('_lessons'))}
 
 Reply with ONLY this JSON, no prose, no markdown fences:
 {{"subject": "<subject, no 'Subject:' prefix>", "body": "<full body, greeting through sign-off, real newlines>"}}"""
@@ -595,12 +609,21 @@ Reply with ONLY this JSON, no prose, no markdown fences:
     return new_subject, new_body
 
 
-def draft_and_polish(cfg, lead, brief, magnet_url, draft_fn):
+def draft_and_polish(cfg, lead, brief, magnet_url, draft_fn, on_critique=None):
     """Draft (optionally best-of-N), score, and rewrite weak copy up to the configured
     number of passes. Returns (subject, body, provider) — a drop-in for generate_copy().
 
     `draft_fn(cfg, lead, brief, magnet_url) -> (subject, body, provider)` is injected so
     this module never imports the drafter (no cycle). Reads cfg['copy']['quality_gate'].
+
+    `on_critique(attempt, critique, outcome=None)` is an optional sink for every judge
+    verdict this function produces, called once per scored attempt and once more with
+    attempt="final" carrying the outcome. It exists because the rewrite loop used a
+    critique for exactly one rewrite and then discarded it, so nothing the judge learned
+    ever survived the run — the same weaknesses were rediscovered from scratch every
+    morning. Wiring it to storage (see state.record_critique) is what makes improvement
+    measurable across runs. Kept as a callback rather than a DB handle so this module
+    stays free of state/IO and remains unit-testable. Never let it break a draft.
 
     RAISES rather than returning weak or invented copy. Two hard refusals:
 
@@ -615,6 +638,15 @@ def draft_and_polish(cfg, lead, brief, magnet_url, draft_fn):
     lead in `sourced` for a later retry, which is the correct outcome for "we could not
     write this one honestly yet".
     """
+    def _note(attempt, critique, outcome=None):
+        # A telemetry sink must never be able to fail a draft.
+        if on_critique is None:
+            return
+        try:
+            on_critique(attempt, critique, outcome)
+        except Exception:
+            pass
+
     gate = (cfg.get("copy", {}) or {}).get("quality_gate", {}) or {}
     enabled = bool(gate.get("enabled"))
     min_score = int(gate.get("min_score", 8))
@@ -691,7 +723,9 @@ def draft_and_polish(cfg, lead, brief, magnet_url, draft_fn):
         for (s, b, prov, _, problems) in scored:
             if not problems:
                 print("   🧪 [Quality] judge unavailable — shipping a citation-clean draft unscored.")
+                _note("final", None, "shipped_unscored")
                 return s, b, prov
+        _note("final", None, "refused_citation")
         raise RuntimeError("judge unavailable and every candidate cited unverifiable specifics")
     # Rank citation-clean FIRST, score second: a beautifully written draft that invented
     # a figure must never beat an honest one, whatever the judge made of the prose.
@@ -699,6 +733,7 @@ def draft_and_polish(cfg, lead, brief, magnet_url, draft_fn):
         scored, key=lambda x: (not x[4], x[3]["score"] if x[3] else -1))
     cur = sc["score"] if sc else min_score
     print(f"   🧪 [Quality] draft scored {cur}/10" + (f" (best of {n})" if n > 1 else "") + ".")
+    _note("draft", sc)
 
     # 3) Rewrite while below the bar OR still citing something unsupported. Each pass
     #    rewrites from the BEST draft so far (the champion) using that draft's own
@@ -722,6 +757,7 @@ def draft_and_polish(cfg, lead, brief, magnet_url, draft_fn):
         nval = nsc["score"]
         note = (f" but still cites {'; '.join(nproblems[:2])}" if nproblems else "")
         print(f"   🧪 [Quality] revision {rev} scored {nval}/10{note}.")
+        _note(f"revision-{rev}", nsc)
         # Accept on the same two-key comparison used to pick the champion, so a revision
         # that fixed an invented claim wins even if the judge liked the prose slightly
         # less — and one that introduces a new invented claim can never win.
@@ -730,13 +766,16 @@ def draft_and_polish(cfg, lead, brief, magnet_url, draft_fn):
 
     # 4) Refuse rather than ship. Both of these used to be advisory.
     if best[4]:
+        _note("final", best[3], "refused_citation")
         raise RuntimeError(
             f"draft cites specifics our facts don't support after {rev} revision(s): "
             f"{'; '.join(best[4])}")
     if best[2] < floor:
+        _note("final", best[3], "refused_floor")
         raise RuntimeError(
             f"draft scored {best[2]}/10, below the hard floor of {floor} "
             f"(aiming for {min_score}, {rev} revision(s))")
     print(f"   🧪 [Quality] final {best[2]}/10 (min {min_score}, floor {floor}, "
           f"{rev} revision(s)) — citations check out.")
+    _note("final", best[3], "shipped")
     return best[0], best[1], prov

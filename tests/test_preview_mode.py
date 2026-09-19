@@ -66,7 +66,7 @@ def test_preview_runs_real_path_but_persists_nothing():
     lead_agent.magnet.build_content = lambda cfg, lead, brief: {"headline": "h", "steps": []}
     lead_agent.magnet.save_magnet = lambda *a, **k: None
     lead_agent.magnet.url = lambda cfg, client, token: "http://localhost:5002/magnet/ejentic/tok123"
-    lead_agent.quality.draft_and_polish = lambda cfg, lead, brief, url, fn: ("A quick idea", _FAKE_BODY, "fake")
+    lead_agent.quality.draft_and_polish = lambda cfg, lead, brief, url, fn, **kw: ("A quick idea", _FAKE_BODY, "fake")
 
     def _spy(name):
         def f(*a, **k):

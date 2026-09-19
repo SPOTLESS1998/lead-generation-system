@@ -192,9 +192,61 @@ CREATE TABLE IF NOT EXISTS observer_state (
     updated_at    TEXT NOT NULL
 );
 
+-- Every judge verdict, kept. The rewrite loop used a critique once and threw it
+-- away, so the drafter re-learned the same lesson on every run and run 11 was no
+-- better than run 1. Keeping them is what makes improvement measurable (the
+-- per-run scorecard) and learnable (the proposed lessons below).
+CREATE TABLE IF NOT EXISTS draft_critiques (
+    id          INTEGER PRIMARY KEY,
+    client      TEXT NOT NULL,
+    run_id      TEXT,
+    lead_email  TEXT,
+    attempt     TEXT,                 -- draft | revision-1 | revision-2 ...
+    score       INTEGER,              -- 1-10, NULL if the judge was unavailable
+    issues      TEXT,                 -- JSON list of short phrases
+    fix_hint    TEXT,
+    outcome     TEXT,                 -- shipped | refused_floor | refused_citation | judge_down
+    created_at  TEXT NOT NULL
+);
+
+-- Lessons the reflection pass PROPOSES from recurring critiques.
+-- It may propose; it may never promote. Nothing here reaches a prompt until a
+-- human sets status='approved' — the same gate the Nova learning loop uses, and
+-- for the same reason: a drafter that silently rewrites its own instructions can
+-- reintroduce exactly the fabrication the citation checker exists to stop.
+CREATE TABLE IF NOT EXISTS copy_lessons (
+    id          INTEGER PRIMARY KEY,
+    client      TEXT NOT NULL,
+    lesson      TEXT NOT NULL,        -- one short STYLE rule, never a fact
+    evidence    TEXT,                 -- JSON: counts + sample critique phrases
+    status      TEXT NOT NULL DEFAULT 'proposed',   -- proposed | approved | rejected
+    proposed_at TEXT NOT NULL,
+    decided_at  TEXT,
+    decided_by  TEXT
+);
+
+-- Per-run quality scorecard: the trend that shows whether run 10 beats run 5.
+CREATE TABLE IF NOT EXISTS run_quality (
+    id                INTEGER PRIMARY KEY,
+    client            TEXT NOT NULL,
+    run_id            TEXT,
+    attempted         INTEGER NOT NULL DEFAULT 0,
+    shipped           INTEGER NOT NULL DEFAULT 0,
+    refused_floor     INTEGER NOT NULL DEFAULT 0,
+    refused_citation  INTEGER NOT NULL DEFAULT 0,
+    provider_failures INTEGER NOT NULL DEFAULT 0,
+    mean_score        REAL,
+    median_score      REAL,
+    first_pass_score  REAL,           -- mean score BEFORE any revision
+    created_at        TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sends_client_mailbox_day ON sends(client, mailbox, sent_at);
 CREATE INDEX IF NOT EXISTS idx_events_client_step ON pipeline_events(client, step, created_at);
 CREATE INDEX IF NOT EXISTS idx_faults_client_status ON faults(client, status);
+CREATE INDEX IF NOT EXISTS idx_critiques_client ON draft_critiques(client, created_at);
+CREATE INDEX IF NOT EXISTS idx_lessons_client_status ON copy_lessons(client, status);
+CREATE INDEX IF NOT EXISTS idx_runq_client ON run_quality(client, created_at);
 """
 
 
@@ -613,6 +665,199 @@ def record_run(conn, client, status, sourced=0, drafted=0, failed_steps=None,
          json.dumps(list(failed_steps or [])), detail, started_at or now, now),
     )
     conn.commit()
+
+
+# --- learning: critiques, lessons, and the per-run scorecard ----------------
+# The drafter used to forget everything between runs. These three tables are what
+# turn "it produced 10 emails" into "it is producing BETTER emails than last week".
+
+def record_critique(conn, client, lead_email, attempt, critique, outcome,
+                    run_id=None):
+    """Persist one judge verdict. Never raises — losing a critique must not lose a draft."""
+    try:
+        score = None if critique is None else critique.get("score")
+        issues = [] if critique is None else (critique.get("issues") or [])
+        hint = "" if critique is None else (critique.get("fix_hint") or "")
+        conn.execute(
+            """INSERT INTO draft_critiques
+               (client, run_id, lead_email, attempt, score, issues, fix_hint, outcome, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (client, run_id, lead_email, attempt,
+             int(score) if score is not None else None,
+             json.dumps([str(i) for i in issues][:6]), hint, outcome, _now()),
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+
+def recent_critiques(conn, client, limit=200, max_score=None):
+    sql = "SELECT * FROM draft_critiques WHERE client=?"
+    args = [client]
+    if max_score is not None:
+        sql += " AND score IS NOT NULL AND score <= ?"
+        args.append(int(max_score))
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(int(limit))
+    return conn.execute(sql, args).fetchall()
+
+
+def record_run_quality(conn, client, run_id=None, **kw):
+    """Write one row of the per-run scorecard. Keys mirror the run_quality columns."""
+    scores = kw.pop("scores", None) or []
+    first_pass = kw.pop("first_pass_scores", None) or []
+    mean = round(sum(scores) / len(scores), 2) if scores else None
+    med = None
+    if scores:
+        s = sorted(scores)
+        mid = len(s) // 2
+        med = float(s[mid]) if len(s) % 2 else round((s[mid - 1] + s[mid]) / 2, 2)
+    fp = round(sum(first_pass) / len(first_pass), 2) if first_pass else None
+    conn.execute(
+        """INSERT INTO run_quality
+           (client, run_id, attempted, shipped, refused_floor, refused_citation,
+            provider_failures, mean_score, median_score, first_pass_score, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (client, run_id, int(kw.get("attempted", 0)), int(kw.get("shipped", 0)),
+         int(kw.get("refused_floor", 0)), int(kw.get("refused_citation", 0)),
+         int(kw.get("provider_failures", 0)), mean, med, fp, _now()),
+    )
+    conn.commit()
+
+
+def run_quality_history(conn, client, limit=20):
+    """Newest-first scorecard rows — the trend behind 'is it getting better?'."""
+    return conn.execute(
+        "SELECT * FROM run_quality WHERE client=? ORDER BY id DESC LIMIT ?",
+        (client, int(limit)),
+    ).fetchall()
+
+
+def propose_lesson(conn, client, lesson, evidence=None):
+    """Record a PROPOSED lesson. Deliberately never sets status='approved'.
+
+    Returns the row id, or None if an identical lesson is already on file (so a
+    nightly reflection pass cannot spam the same suggestion every run).
+    """
+    lesson = (lesson or "").strip()
+    if not lesson:
+        return None
+    dup = conn.execute(
+        "SELECT id FROM copy_lessons WHERE client=? AND lesson=? AND status IN ('proposed','approved')",
+        (client, lesson),
+    ).fetchone()
+    if dup:
+        return None
+    cur = conn.execute(
+        """INSERT INTO copy_lessons (client, lesson, evidence, status, proposed_at)
+           VALUES (?, ?, ?, 'proposed', ?)""",
+        (client, lesson, json.dumps(evidence or {}), _now()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def approved_lessons(conn, client, limit=6):
+    """The ONLY lessons allowed anywhere near a prompt."""
+    rows = conn.execute(
+        "SELECT lesson FROM copy_lessons WHERE client=? AND status='approved' "
+        "ORDER BY id DESC LIMIT ?", (client, int(limit)),
+    ).fetchall()
+    return [r["lesson"] for r in rows]
+
+
+def list_lessons(conn, client, status=None, limit=50):
+    sql = "SELECT * FROM copy_lessons WHERE client=?"
+    args = [client]
+    if status:
+        sql += " AND status=?"
+        args.append(status)
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(int(limit))
+    return conn.execute(sql, args).fetchall()
+
+
+def decide_lesson(conn, client, lesson_id, status, decided_by="operator"):
+    """Approve or reject a proposed lesson. This is the human gate."""
+    if status not in ("approved", "rejected"):
+        raise ValueError("status must be 'approved' or 'rejected'")
+    conn.execute(
+        "UPDATE copy_lessons SET status=?, decided_at=?, decided_by=? WHERE id=? AND client=?",
+        (status, _now(), decided_by, int(lesson_id), client),
+    )
+    conn.commit()
+
+
+def summarize_run_quality(conn, client, run_id, provider_failures=0):
+    """Derive one scorecard row from the critiques this run recorded, and store it.
+
+    Derived rather than threaded through the pipeline on purpose: the counters would
+    otherwise have to be passed down through three call layers and kept in sync at
+    every early-return, which is exactly the kind of bookkeeping that silently drifts.
+    The critique rows are already the truth; this just reads them.
+
+    Returns the stored summary dict (or None when the run drafted nothing).
+    """
+    rows = conn.execute(
+        "SELECT attempt, score, outcome FROM draft_critiques WHERE client=? AND run_id=?",
+        (client, run_id),
+    ).fetchall()
+    if not rows:
+        return None
+
+    finals = [r for r in rows if r["attempt"] == "final"]
+    scores = [r["score"] for r in rows if r["score"] is not None]
+    first_pass = [r["score"] for r in rows
+                  if r["attempt"] == "draft" and r["score"] is not None]
+    counts = {}
+    for r in finals:
+        counts[r["outcome"]] = counts.get(r["outcome"], 0) + 1
+
+    summary = {
+        "attempted": len(finals),
+        "shipped": counts.get("shipped", 0) + counts.get("shipped_unscored", 0),
+        "refused_floor": counts.get("refused_floor", 0),
+        "refused_citation": counts.get("refused_citation", 0),
+        "provider_failures": int(provider_failures),
+        "scores": scores,
+        "first_pass_scores": first_pass,
+    }
+    record_run_quality(conn, client, run_id=run_id, **summary)
+    return summary
+
+
+def quality_trend(conn, client, window=5):
+    """Compare the last `window` runs against the `window` before them.
+
+    This is the answer to "is run 10 better than run 5?" — deliberately a comparison
+    of two windows rather than a single number, because one run of a non-deterministic
+    provider chain says nothing on its own.
+    """
+    rows = run_quality_history(conn, client, limit=window * 2)
+    if len(rows) < 2:
+        return None
+
+    def agg(rs):
+        ms = [r["mean_score"] for r in rs if r["mean_score"] is not None]
+        att = sum(r["attempted"] or 0 for r in rs)
+        shp = sum(r["shipped"] or 0 for r in rs)
+        return {
+            "runs": len(rs),
+            "mean_score": round(sum(ms) / len(ms), 2) if ms else None,
+            "attempted": att,
+            "shipped": shp,
+            "ship_rate": round(shp / att, 3) if att else None,
+        }
+
+    recent, prior = agg(rows[:window]), agg(rows[window:])
+    delta_score = None
+    if recent["mean_score"] is not None and prior["mean_score"] is not None:
+        delta_score = round(recent["mean_score"] - prior["mean_score"], 2)
+    delta_ship = None
+    if recent["ship_rate"] is not None and prior["ship_rate"] is not None:
+        delta_ship = round(recent["ship_rate"] - prior["ship_rate"], 3)
+    return {"recent": recent, "prior": prior,
+            "delta_mean_score": delta_score, "delta_ship_rate": delta_ship}
 
 
 def last_run(conn, client, status=None):

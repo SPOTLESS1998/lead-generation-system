@@ -186,6 +186,17 @@ def main():
         review.notify_operator(cfg, lead_id, entry)
         drafted += 1
 
+    try:
+        summary = state.summarize_run_quality(conn, client, run_id)
+        if summary:
+            sc = summary["scores"]
+            mean = round(sum(sc) / len(sc), 1) if sc else "—"
+            print(f"\n📈 [Quality] {summary['attempted']} attempted · "
+                  f"{summary['shipped']} shipped · {summary['refused_floor']} below floor · "
+                  f"{summary['refused_citation']} refused for citations · mean {mean}")
+    except Exception as e:
+        print(f"⚠️  could not write the quality scorecard: {e}")
+
     print(f"\n🎉 Done. Drafted {drafted} pitch(es), {failed} failed "
           f"(left '{state.SOURCED}'), {ungrounded} skipped for no grounding facts "
           f"— awaiting your approval at {cfg.get('unsubscribe_base_url')}.")

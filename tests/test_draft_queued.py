@@ -91,7 +91,9 @@ def _patch_seams(saved, magnet_url="https://audit.ejentic.xyz/magnet/acme/tok123
         calls["magnet"] += 1
         return {"headline": "Audit", "steps": [{"title": "t", "detail": "d"}]}
 
-    def _gate(cfg, lead, brief, url, fn):
+    # **kw absorbs draft_and_polish's optional telemetry sink (on_critique) so this
+    # stub does not have to be edited every time an optional argument is added.
+    def _gate(cfg, lead, brief, url, fn, **kw):
         calls["gate"] += 1
         calls["gate_url"] = url          # what the drafter was handed
         return ("A quick idea for Acme", _BODY, "fake-provider")

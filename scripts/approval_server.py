@@ -686,6 +686,84 @@ def health():
             + '<p class="muted">Off — drafting uses the free provider chain. Set '
               '<code>copy.premium</code> in the client config to route copy to real Claude.</p>')
 
+    # --- Is the writing actually improving? -------------------------------
+    # The ledger above says what the pipeline SPENT. This says whether what it
+    # produced is getting better, which is a different question and the one that
+    # matters for a system meant to compound rather than plateau.
+    try:
+        hist = state.run_quality_history(conn, client, limit=10)
+        trend = state.quality_trend(conn, client)
+    except Exception:
+        hist, trend = [], None
+
+    if hist:
+        latest = hist[0]
+        tcolor, tlabel = "var(--ink)", "not enough runs yet"
+        if trend and trend["delta_mean_score"] is not None:
+            d = trend["delta_mean_score"]
+            tcolor = ("var(--success)" if d > 0 else
+                      "var(--danger)" if d < 0 else "var(--ink)")
+            tlabel = f"{d:+.2f} vs previous {trend['prior']['runs']} run(s)"
+        fp = latest["first_pass_score"]
+        quality_kpis = (
+            _kpi("Mean score (last run)",
+                 f'{latest["mean_score"]:.1f}' if latest["mean_score"] is not None else "—",
+                 f'first pass {fp:.1f}' if fp is not None else "")
+            + _kpi("Trend", tlabel, "higher is better", tcolor)
+            + _kpi("Shipped", f'{latest["shipped"]}/{latest["attempted"]}',
+                   "drafts that cleared the gate")
+            + _kpi("Refused",
+                   f'{(latest["refused_floor"] or 0) + (latest["refused_citation"] or 0)}',
+                   f'{latest["refused_floor"]} below floor · '
+                   f'{latest["refused_citation"]} citations', "var(--warning)")
+        )
+        rows_html = ""
+        for r in hist:
+            mean = "—" if r["mean_score"] is None else f'{r["mean_score"]:.1f}'
+            when = html.escape((r["created_at"] or "")[:16].replace("T", " "))
+            rows_html += (f'<tr><td class="muted">{when}</td><td>{r["attempted"]}</td>'
+                          f'<td>{r["shipped"]}</td><td>{r["refused_floor"]}</td>'
+                          f'<td>{r["refused_citation"]}</td><td>{mean}</td></tr>')
+        quality_section = (
+            _section("📈 Is the writing improving?")
+            + f'<div style="{row_style}">{quality_kpis}</div>'
+            + '<div class="panel" style="overflow-x:auto;padding:6px 14px;margin-top:14px;"><table>'
+              '<tr><th>Run</th><th>Attempted</th><th>Shipped</th><th>Below floor</th>'
+              '<th>Citations</th><th>Mean</th></tr>' + rows_html + '</table></div>')
+    else:
+        quality_section = (
+            _section("📈 Is the writing improving?")
+            + '<p class="muted">No scorecard yet — it is written at the end of each '
+              'drafting run. After a few runs this shows whether the copy is getting '
+              'better or quietly getting worse.</p>')
+
+    # Lessons the reflection pass has proposed, and what is actually live.
+    try:
+        proposed = state.list_lessons(conn, client, status="proposed", limit=20)
+        active = state.approved_lessons(conn, client, limit=20)
+    except Exception:
+        proposed, active = [], []
+    lesson_rows = ""
+    for l in proposed:
+        lesson_rows += ('<tr><td><span class="badge badge-warning">awaiting you</span></td>'
+                        f'<td>#{l["id"]}</td><td>{html.escape(l["lesson"])}</td></tr>')
+    for l in active:
+        lesson_rows += ('<tr><td><span class="badge badge-success">live</span></td>'
+                        f'<td>—</td><td>{html.escape(l)}</td></tr>')
+    if lesson_rows:
+        lessons_section = (
+            _section("🧠 Learned copy lessons")
+            + '<p class="meta" style="margin:0 0 12px;">Distilled from the editor\'s own '
+              'recurring critiques. A proposal changes nothing until you approve it: '
+              '<code>scripts/reflect_copy.py --approve &lt;id&gt;</code></p>'
+            + '<div class="panel" style="overflow-x:auto;padding:6px 14px;"><table>'
+              '<tr><th>Status</th><th>ID</th><th>Rule</th></tr>' + lesson_rows + '</table></div>')
+    else:
+        lessons_section = (
+            _section("🧠 Learned copy lessons")
+            + '<p class="muted">None yet. Run <code>scripts/reflect_copy.py</code> once '
+              'there are a few runs of critiques for it to read.</p>')
+
     inner = f"""
       <div class="wrap" style="max-width:980px;">
         <p style="margin:0 0 10px;">
@@ -701,6 +779,8 @@ def health():
         <p class="meta" style="margin-top:8px;">Cost is <b>notional</b> — free providers
            are $0; set a reference rate + margin in <code>observability.cost</code> to price clients.</p>
         {premium_section}
+        {quality_section}
+        {lessons_section}
         {_section("🚑 Faults")}
         <p style="margin:0 0 14px;">{pills}</p>
         {faults_table}
