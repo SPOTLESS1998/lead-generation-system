@@ -306,7 +306,23 @@ def draft_one_lead(conn, cfg, lead, run_id):
     queued for retry. Both are correct; neither belongs in here. The whole draft is
     metered as one ledger step, so tokens/cost/faults are attributed the same way no
     matter which entry point ran it.
+
+    Raises quality.UngroundedLead FIRST, before any model call, if we hold nothing
+    citable about the prospect. The gate is here — in the one shared recipe — rather
+    than at each call site, because it previously existed only in draft_queued.py and
+    so never ran on the cron path. Enforcing it at the chokepoint is what stops that
+    drift recurring.
     """
+    # GROUNDING GATE. No facts and no description means we know nothing specific about
+    # this business. A cold email that claims specifics it cannot support is worse than
+    # no email: unverifiable by us, damaging to the sending domain if wrong, and the one
+    # failure this pipeline cannot detect after the fact. Checked before ANY model call
+    # so an ungrounded lead costs nothing rather than burning a full strategy + magnet +
+    # best-of-N + judge cycle only to be refused at the end.
+    if not quality.is_grounded(lead):
+        raise quality.UngroundedLead(
+            f"no grounding facts for {lead.get('company_name') or lead.get('email')} "
+            f"— nothing scraped to cite, so no honest pitch can be written")
     # Premium-first copy when today's real-Claude spend is under the daily cap, else
     # the free chain (decided in core/budget.copy_cfg). The strategist, the copywriter
     # and the quality gate all use gen_cfg so their tokens count toward the cap; the
@@ -506,6 +522,7 @@ def main(preview=False, limit=None):
                   "(discovery.segments) to keep finding leads.")
 
     drafted = 0
+    ungrounded = 0
     for lead in pool:
         if drafted >= max_drafts:
             label = "sample limit" if preview else "daily draft cap"
@@ -529,6 +546,16 @@ def main(preview=False, limit=None):
             # copy → quality gate, metered as a single 'draft' ledger step.
             subject, body, provider, magnet_url, magnet_token = draft_one_lead(
                 conn, cfg, lead, run_id)
+        except quality.UngroundedLead as e:
+            # Not a failure — a DATA gap. We know nothing citable about this business,
+            # so there is no honest pitch to write. Release the claim and count it
+            # loudly: an ungrounded lead silently caps how many pitches this pipeline
+            # can ever produce, and the fix is the discovery extractor, not the drafter.
+            ungrounded += 1
+            print(f"   ⏭️  {lead['company_name']}: {e}. "
+                  f"Staying '{state.SOURCED}' for enrichment.")
+            state.set_status(conn, cfg["client"], lead["email"], state.SOURCED)
+            continue
         except ai.AllProvidersCoolingDown as e:
             # Nothing was actually called — every provider was still inside its
             # circuit-breaker cooldown. That is a recoverable, usually-brief state
@@ -589,6 +616,13 @@ def main(preview=False, limit=None):
 
     print(f"\n🎉 Done. Drafted {drafted} pitch(es) awaiting your web approval "
           f"at {cfg.get('unsubscribe_base_url')}.")
+    if ungrounded:
+        # Loud and counted, not a whisper: this is a DISCOVERY gap that silently caps
+        # how many pitches the pipeline can ever produce. It belongs in front of the
+        # operator, not buried in the per-lead lines.
+        print(f"⚠️  {ungrounded} lead(s) skipped: no grounding facts. They were scraped "
+              f"without facts/description and cannot be drafted honestly until enriched. "
+              f"Check the discovery extractor for these rows rather than hand-writing facts.")
 
     # Quality scorecard for THIS run, plus how it compares to previous ones. Without
     # this the system could get steadily worse and the only visible signal would be

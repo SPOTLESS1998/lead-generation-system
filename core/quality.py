@@ -344,6 +344,38 @@ _REVIEW_CLAUSE = re.compile(r'well[- ]reviewed:.*?(?=(?:services:|notable:)|$)',
 _THIN_EVIDENCE_WORDS = 12
 
 
+class UngroundedLead(Exception):
+    """Raised when we hold NOTHING citable about a prospect, so no honest
+    personalized pitch can be written for them."""
+
+
+def is_grounded(lead):
+    """True when we hold at least SOMETHING real about this prospect.
+
+    The single definition of "can this lead be drafted at all", deliberately
+    living next to evidence_is_thin so the two are read together:
+
+        is_grounded      -> do we know ANYTHING? (nothing = do not draft)
+        evidence_is_thin -> do we know LITTLE?   (little = allow a plain opener)
+
+    This used to be spelled `has_grounding` inside scripts/draft_queued.py and
+    nowhere else — so the manual recovery script refused ungrounded leads while
+    scripts/lead_agent.py, the one cron actually runs, drafted them. That is the
+    same drift that shipped duplicate drafts: a guard written, tested, and wired
+    into one of two loops. It belongs in the shared path, which is why it is here
+    and why draft_one_lead enforces it rather than each caller.
+
+    Mirrors the coalesce used everywhere downstream (`company_facts or
+    company_description`). Note the company NAME is deliberately NOT a fallback:
+    handing the model a name positioned as researched evidence is precisely what
+    produced invented detail like "powered over 1,200 Nigerian merchants".
+    """
+    l = lead or {}
+    facts = (l.get("company_facts") or "").strip()
+    desc = (l.get("company_description") or "").strip()
+    return bool(facts or desc)
+
+
 def evidence_is_thin(lead):
     """True when we hold almost nothing citable about this prospect.
 

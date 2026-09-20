@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(HERE))   # repo root -> `core`
 sys.path.insert(0, HERE)                     # scripts/  -> `lead_agent`
 
 from core import config, state, review, suppression
+from core import quality
 from core import observability as obs
 # The shared drafting recipe lives in lead_agent so BOTH entry points draft
 # identically (fit → strategy → magnet → copy → quality gate). Never re-spell
@@ -86,8 +87,11 @@ def _draft_lead_view(row):
         "company_facts": facts or desc,
         # Explicit signal for the gate in main(). Kept as its own key rather than inferred
         # from truthiness at the call site so the rule is stated once, here, next to the
-        # data it judges.
-        "has_grounding": bool(facts or desc),
+        # data it judges. Delegates to core/quality.is_grounded — the SINGLE definition,
+        # which draft_one_lead itself now enforces, so this pre-check is only an early
+        # exit that saves claiming the lead, never the sole guard.
+        "has_grounding": quality.is_grounded({
+            "company_facts": facts or desc, "company_description": desc}),
         "ejentic_service": row["niche"] or "",
     }
 
