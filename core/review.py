@@ -16,6 +16,7 @@ import os
 import html
 import json
 import uuid
+import tempfile
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -24,21 +25,82 @@ from . import config, spam, sender, state
 PENDING_FILE = os.path.join(config.ROOT, "pending_leads.json")
 
 
+class QueueCorrupt(Exception):
+    """Raised when pending_leads.json exists but is not valid JSON.
+
+    This is an exception rather than a quiet `{}` because of what `{}` used to
+    cause. `load_pending` swallowed JSONDecodeError and returned an empty dict,
+    and every caller then behaved as though the queue were legitimately empty:
+
+      * save_pending did `leads = load_pending()` -> {}, added ONE entry, and
+        wrote — silently replacing the entire approval queue with a single draft.
+      * emails_with_live_draft returned an empty set, disabling the duplicate
+        guard whose absence "shipped 20 prospects with two approvable drafts
+        each".
+      * the dashboard rendered "No drafts waiting."
+
+    So a corrupt file did not merely hide the queue, it destroyed it on the next
+    write, and looked like an ordinary quiet morning while doing so. The 13
+    pending_leads.json.bak files on the box — six from one day — are what that
+    looked like in practice.
+
+    Failing loudly is the safe direction: a raised error stops a drafting run and
+    leaves the file untouched for recovery, where a silent {} loses the queue and
+    may double-email real people.
+    """
+
+
 # --- queue ------------------------------------------------------------------
 
 def load_pending():
+    """The approval queue. {} only when the file genuinely does not exist yet.
+
+    Raises QueueCorrupt if the file exists but cannot be parsed — see that class.
+    """
     if not os.path.exists(PENDING_FILE):
-        return {}
+        return {}                      # fresh install: legitimately empty
     with open(PENDING_FILE, "r") as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError:
-            return {}
+        raw = f.read()
+    if not raw.strip():
+        # A zero-byte file is the classic signature of the old truncate-then-write:
+        # the truncate landed, the process died before json.dump. Treat it as
+        # corruption, NOT as an empty queue, for exactly the same reason.
+        raise QueueCorrupt(
+            f"{PENDING_FILE} is empty (0 bytes). This is usually a write that was "
+            f"interrupted. Restore from a pending_leads.json.bak* before drafting.")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise QueueCorrupt(
+            f"{PENDING_FILE} is not valid JSON ({e}). Refusing to continue, because "
+            f"treating it as an empty queue would overwrite it on the next draft. "
+            f"Restore from a pending_leads.json.bak* file.")
 
 
 def _write(leads):
-    with open(PENDING_FILE, "w") as f:
-        json.dump(leads, f, indent=4)
+    """Write the queue atomically: temp file in the same directory, then rename.
+
+    The previous version did `open(PENDING_FILE, "w")`, which TRUNCATES before
+    json.dump runs — so any crash, kill, or full disk mid-write left invalid or
+    zero-byte JSON, which load_pending then read as an empty queue. os.replace is
+    atomic on POSIX, so a reader (the always-running Flask app) sees either the
+    old file or the new one, never a half-written one.
+
+    Same approach as deploy/box_merge.write_json_atomic, which already documented
+    this exact hazard — core/review.py simply never used it.
+    """
+    d = os.path.dirname(os.path.abspath(PENDING_FILE)) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".pending_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(leads, f, indent=4)
+            f.flush()
+            os.fsync(f.fileno())       # durable before the rename, not just buffered
+        os.replace(tmp, PENDING_FILE)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def save_pending(entry):

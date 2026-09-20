@@ -27,8 +27,15 @@ ATTEMPTS = 3
 
 def main():
     cfg = config.load_client()
+    try:
+        queue = review.load_pending()
+    except review.QueueCorrupt as e:
+        # Loud and non-zero: this script exists to re-notify, and "nothing pending"
+        # would be a lie that hides unrecovered data loss.
+        print(f"❌ {e}")
+        return 1
     pending = {
-        lid: e for lid, e in review.load_pending().items()
+        lid: e for lid, e in queue.items()
         if e.get("status") == "pending" and e.get("client") == cfg["client"]
     }
     if not pending:
@@ -62,4 +69,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

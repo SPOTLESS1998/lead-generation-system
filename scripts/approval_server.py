@@ -139,6 +139,23 @@ def _card(lead_id, entry):
     </div>"""
 
 
+def _queue_error_page(e):
+    """The page shown when the queue file is unreadable.
+
+    Deliberately explicit rather than "No drafts waiting." A corrupt queue and an
+    empty queue look identical to an operator but mean opposite things — one is a
+    quiet morning, the other is unrecovered data loss — and conflating them is
+    what let this go unnoticed. See core/review.QueueCorrupt.
+    """
+    return page(
+        "Approval Queue Unreadable",
+        f"{html.escape(str(e))}<br><br>Nothing has been lost or changed — the file is "
+        f"left exactly as it is, and drafting refuses to run until it is readable, so "
+        f"it cannot be overwritten. Restore the most recent "
+        f"<code>pending_leads.json.bak*</code> next to it, then reload this page.",
+        "🗄️"), 500
+
+
 @app.route('/')
 def dashboard():
     """Home screen: every pending draft for the active client, ready to approve."""
@@ -149,7 +166,10 @@ def dashboard():
     except Exception:
         client_label = html.escape(client)
 
-    leads = review.load_pending()
+    try:
+        leads = review.load_pending()
+    except review.QueueCorrupt as e:
+        return _queue_error_page(e)
     pending = [(lid, e) for lid, e in leads.items()
                if e.get("client") == client and e.get("status") == "pending"]
 
@@ -176,7 +196,10 @@ def dashboard():
 
 @app.route('/approve/<lead_id>')
 def approve(lead_id):
-    leads = review.load_pending()
+    try:
+        leads = review.load_pending()
+    except review.QueueCorrupt as e:
+        return _queue_error_page(e)
     if lead_id not in leads or leads[lead_id].get("status") != "pending":
         return page("Link Expired or Invalid",
                     "This lead has already been processed or does not exist.", "⚠️"), 400
@@ -301,7 +324,10 @@ def approve(lead_id):
 
 @app.route('/decline/<lead_id>')
 def decline(lead_id):
-    leads = review.load_pending()
+    try:
+        leads = review.load_pending()
+    except review.QueueCorrupt as e:
+        return _queue_error_page(e)
     if lead_id in leads and leads[lead_id].get("status") == "pending":
         review.set_pending_status(lead_id, "declined")
         print(f"\n[!] WEB DECLINE for {lead_id}. Draft discarded.")
