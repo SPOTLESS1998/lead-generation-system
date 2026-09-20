@@ -20,7 +20,6 @@
   "discovery": {
     "max_leads": 10,
     "max_results": 12,
-    "location": "REPLACE-ME City, Country",
     "segments": [],
     "rotation": {
       "enabled": false,

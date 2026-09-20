@@ -335,8 +335,13 @@ def draft_one_lead(conn, cfg, lead, run_id):
     try:
         gen_cfg = dict(gen_cfg)
         gen_cfg["_lessons"] = state.approved_lessons(conn, cfg["client"])
-    except Exception:
-        pass
+    except Exception as e:
+        # Say so. /health shows approved lessons with a "live" badge, so silence
+        # here meant the operator's evidence said the learning loop was applied
+        # while the run had in fact drafted without it. A locked DB is realistic:
+        # the approval server holds concurrent connections to the same file.
+        print(f"⚠️  could not load approved copy lessons ({e}); "
+              f"drafting WITHOUT them this run.")
 
     with obs.track(conn, cfg, "draft", subject=lead["email"], run_id=run_id):
         # Pick the best-fitting offering from our CLOSED menu before drafting. The

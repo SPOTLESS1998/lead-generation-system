@@ -147,7 +147,13 @@ def check(subject, body):
 
 
 def describe(result):
-    """A compact one-line human summary of a check() result."""
+    """A compact one-line human summary of a check() result.
+
+    NOTE: no caller today. core/review.py and scripts/approval_server.py both
+    render the same information as an HTML badge straight from the check() dict
+    instead. Kept for plain-text contexts (an operator email, a log line) where a
+    badge is not an option.
+    """
     if not result:
         return "spam check: (not run)"
     if result["level"] == "ok":

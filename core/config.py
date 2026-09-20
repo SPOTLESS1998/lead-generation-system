@@ -11,6 +11,7 @@ path off this file's location so nothing depends on the current directory.
 
 import os
 import json
+import copy
 import hashlib
 from pathlib import Path
 
@@ -116,7 +117,11 @@ DEFAULTS = {
     "timezone": "UTC",                        # IANA tz for proposing/booking meetings
     "booking": {                              # Tier 2: book a real meeting on an approved 'interested' reply
         "enabled": True,                      # False = still reply, just don't create a calendar event
-        "provider": "composio_googlecalendar",
+        "provider": "composio_googlecalendar",   # LABEL ONLY — nothing reads this.
+                                              # The backend is chosen by `action_slug`
+                                              # below (see core/calendar.py). Kept as a
+                                              # declaration of intent; do not add logic
+                                              # that branches on it without wiring it.
         "default_duration_min": 30,
         "default_service": "",                # fallback service label when a lead has no niche tag
         "action_slug": "GOOGLECALENDAR_CREATE_EVENT",
@@ -219,12 +224,34 @@ def _env(key):
 
 
 def _deep_merge(base, override):
-    out = dict(base)
+    """Merge `override` over `base`, recursing into dicts. Lists replace wholesale.
+
+    Every nested dict is COPIED, never shared. Previously only the keys a tenant
+    actually overrode got a fresh dict; any DEFAULTS sub-dict a tenant did not
+    mention was returned BY REFERENCE, so `cfg["yellowpages"] is
+    DEFAULTS["yellowpages"]` was True. Two consequences, both live in the
+    long-running approval server, which loads several tenants into one process:
+
+      * A caller that mutates its own config mutates DEFAULTS for every tenant
+        loaded afterwards. scripts/discover_preview.py does exactly this
+        (yp["queries"], yp["location"], ...), so a preview run silently rewrote
+        the defaults for the rest of the process.
+      * load_client() writes RESOLVED mailboxes — including passwords pulled from
+        the environment — into cfg["sending"]. For a tenant whose config omits the
+        `sending` block, that write would land in module-global DEFAULTS. No
+        current tenant omits it, so this was latent rather than live, but one
+        tenant's credentials reaching another's config is not a failure mode worth
+        leaving to chance in a system whose whole premise is per-client isolation
+        (MULTITENANCY.md).
+
+    deepcopy is the cheap fix: config is loaded once per client per process.
+    """
+    out = copy.deepcopy(base) if isinstance(base, dict) else base
     for k, v in (override or {}).items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             out[k] = _deep_merge(out[k], v)
         else:
-            out[k] = v
+            out[k] = copy.deepcopy(v)
     return out
 
 

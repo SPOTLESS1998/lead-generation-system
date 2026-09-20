@@ -538,24 +538,37 @@ def appointments():
 
     conn = open_conn(cfg)
     try:
-        upcoming, past = [], []
+        upcoming, past, undated = [], [], []
         for r in state.list_appointments(conn, client):
             start = reminders.parse_start(r["starts_at"], tz)
             sent = [m for m in lead_times if state.reminder_sent(conn, client, r["id"], m)]
-            (upcoming if (start and start > now) else past).append((start, r, sent))
+            if start is None:
+                # A time we cannot parse is NOT "past". It used to land there by
+                # default, which displayed a future meeting as already happened —
+                # and reminders.parse_start returning None is also why the reminder
+                # agent skips it, so the one booking that needs attention was the
+                # one shown as requiring none. Its own bucket, stated plainly.
+                undated.append((start, r, sent))
+            elif start > now:
+                upcoming.append((start, r, sent))
+            else:
+                past.append((start, r, sent))
     finally:
         conn.close()
 
     upcoming.sort(key=lambda x: x[0])
     past.sort(key=lambda x: x[0].isoformat() if x[0] else "", reverse=True)
 
-    total = len(upcoming) + len(past)
-    count_line = (f"{len(upcoming)} upcoming, {len(past)} past" if total
-                  else "No meetings booked yet")
+    total = len(upcoming) + len(past) + len(undated)
+    count_line = (f"{len(upcoming)} upcoming, {len(past)} past"
+                  + (f", ⚠️ {len(undated)} with an unreadable time" if undated else "")
+                  if total else "No meetings booked yet")
 
     body = (
         _appt_table("📅 Upcoming", upcoming,
                     "No upcoming meetings. When a prospect books, it lands here.", tz, lead_times)
+        + (_appt_table("⚠️ Unreadable start time", undated,
+                       "", tz, lead_times) if undated else "")
         + _appt_table("✅ Past", past, "Nothing here yet.", tz, lead_times)
     )
     inner = f"""
@@ -736,17 +749,33 @@ def health():
         cap = bstat.get("cap_usd")
         allowed = bstat.get("allowed_now")
         rem = bstat.get("remaining_usd")
+        cap_err = bstat.get("cap_error")
+        # A malformed cap must never read as "uncapped · ∞" — that is the
+        # misconfiguration wearing the costume of a deliberate choice.
+        if cap_err:
+            cap_label = "⚠️ CAP UNREADABLE — premium disabled"
+        elif cap:
+            cap_label = f'of ${cap:.2f} daily cap'
+        else:
+            cap_label = 'uncapped'
         prem_kpis = (
             _kpi("Premium model", html.escape(str(bstat.get("model") or "—")))
             + _kpi("Spent today", f'${bstat.get("spent_today_usd", 0) or 0:.4f}',
-                   (f'of ${cap:.2f} daily cap' if cap else 'uncapped'))
-            + _kpi("Remaining today", (f'${rem:.4f}' if rem is not None else '∞'),
-                   ("premium active" if allowed else "cap hit — free fallback"),
-                   "var(--success)" if allowed else "var(--warning)")
+                   cap_label, "var(--danger)" if cap_err else "var(--ink)")
+            + _kpi("Remaining today",
+                   ("$0.0000" if cap_err else (f'${rem:.4f}' if rem is not None else '∞')),
+                   ("config error — see below" if cap_err else
+                    ("premium active" if allowed else "cap hit — free fallback")),
+                   "var(--danger)" if cap_err else
+                   ("var(--success)" if allowed else "var(--warning)"))
         )
+        cap_err_html = (
+            f'<p class="meta" style="margin-top:6px;color:var(--danger);">'
+            f'<b>{html.escape(cap_err)}</b></p>' if cap_err else "")
         premium_section = (
             _section("💎 Premium copy (real Claude)")
             + f'<div style="{row_style}">{prem_kpis}</div>'
+            + cap_err_html
             + '<p class="meta" style="margin-top:6px;">Real-Claude copy spend is '
               'reconstructed from the ledger and capped per day; once the cap is hit, drafting '
               'auto-falls back to the free provider chain.</p>')
@@ -926,8 +955,14 @@ def _resolve_port():
         p = urlparse(base.get("unsubscribe_base_url") or "").port
         if p:
             return int(p)
-    except Exception:
-        pass
+    except Exception as e:
+        # Do not fall through silently. This function exists so the port the server
+        # binds and the port baked into links already sitting in prospects' inboxes
+        # cannot drift — and 5001 is indistinguishable from the legacy default, so a
+        # silent fallback is exactly the drift it was written to prevent.
+        print(f"⚠️  could not read the port from the client config ({e}); "
+              f"falling back to 5001. If your links point elsewhere, set "
+              f"APPROVAL_PORT explicitly.", file=sys.stderr)
     return 5001
 
 

@@ -72,7 +72,8 @@ would pitch someone else's services in this client's name.
 | `offerings` | **Required.** The closed list of services this client sells — the *only* things the strategist may pitch. No default exists; an empty list is a `ConfigError` at load. |
 | `service_outcomes` | `{service: "the concrete result, with a figure and timeframe"}`. The strategist quotes this **verbatim** instead of inventing a number, which is what kept the promise consistent between runs. Keys also count as `offerings` if you omit that list. |
 | `lead_source` | Where leads come from: `"csv"` (reads `leads.csv`), `"maps_firecrawl"`, or `"yellowpages"`. |
-| `discovery` | Settings for `maps_firecrawl`: `max_leads`, `max_results`, `location`, and `segments[]` — each `{name, service, queries[]}`, tagging every prospect it finds with the offering it matched. |
+| `discovery` | Settings for `maps_firecrawl`: `max_leads`, `max_results`, and `segments[]` — each `{name, service, queries[]}`, tagging every prospect it finds with the offering it matched. **Geography goes inside each query string** (`"law firms in Lagos, Nigeria"`), not in a separate field: Maps search takes one text query. There is no `discovery.location` — the template used to show one and nothing ever read it. |
+| `yellowpages` | Settings for `lead_source: "yellowpages"`. This block **does** have a `location`, which is read and substituted into `search_url_template`. |
 | `copy_provider` | `"gemini"` (mandated) or `"nvidia"` (fallback). |
 | `gemini_model` / `nvidia_model` | Model IDs for each provider. |
 | `freellmapi_model` | Model (or ordered list of models) for the FreeLLMAPI gateway. `null` = let the gateway auto-route. |

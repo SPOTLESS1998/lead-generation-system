@@ -709,7 +709,15 @@ def save_magnet(conn, client, token, lead_email, content):
 
 
 def get_magnet(conn, client, token):
-    """Return the stored content dict for a magnet page, or None if unknown."""
+    """Return the stored content dict for a magnet page, or None if unknown.
+
+    A row that exists but holds unparseable JSON also returns None, because the
+    caller can only render a page or not. It is LOGGED though: to the prospect
+    both cases look like "This resource has expired or the link is invalid", but
+    they are opposite problems — an unknown token is someone guessing a URL,
+    while a corrupt row means a prospect who clicked the personalized audit link
+    we promised them in a cold email got a dead end, and nothing anywhere said so.
+    """
     row = conn.execute(
         "SELECT content FROM magnets WHERE client=? AND token=?", (client, token)
     ).fetchone()
@@ -717,7 +725,9 @@ def get_magnet(conn, client, token):
         return None
     try:
         return json.loads(row["content"])
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as e:
+        print(f"⚠️  magnet {token} for client {client} exists but its content is "
+              f"unreadable ({e}); the prospect will see an 'expired link' page.")
         return None
 
 

@@ -558,6 +558,11 @@ def generate_metered(cfg, prompt):
     Returns (text, provider, usage) where usage = {prompt_tokens, completion_tokens,
     total_tokens}. Computed as a delta around the thread accumulator, so it composes
     safely inside an observability.track() block (it does NOT reset the accumulator).
+
+    NOTE: no production caller today — the pipeline meters whole STEPS via
+    observability.track() rather than individual calls. Kept because per-call
+    attribution is the thing you need the moment one step makes several calls at
+    different prices, and the delta arithmetic is the easy part to get wrong.
     """
     before = collect_usage()
     text, provider = generate(cfg, prompt)

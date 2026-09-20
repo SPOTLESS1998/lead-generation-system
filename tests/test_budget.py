@@ -64,10 +64,22 @@ def seed(conn, provider, pt=0, ct=0):
 # --------------------------------------------------------------------------
 check("daily_cap_usd reads the configured cap", budget.daily_cap_usd(make_cfg(cap=5.0)) == 5.0)
 check("daily_cap_usd None when unset", budget.daily_cap_usd(make_cfg(cap=None)) is None)
-check("daily_cap_usd None when 0 (treated as no cap-able value)",
-      budget.daily_cap_usd(make_cfg(cap=0)) is None)
-check("daily_cap_usd None when non-numeric",
-      budget.daily_cap_usd(make_cfg(cap="abc")) is None)
+
+# CONTRACT CHANGED (2026-09-20). These two used to assert `is None`, i.e. that a
+# cap of 0 and a cap of "abc" both meant UNLIMITED — because None is the
+# no-cap sentinel and the old code returned it for anything float() choked on.
+# That made a typo in the only real-money value silently remove the ceiling.
+# Both now fail closed. See core/budget.daily_cap_usd and
+# tests/test_audit_followups.py.
+check("daily_cap_usd 0 means SPEND NOTHING (not 'no cap')",
+      budget.daily_cap_usd(make_cfg(cap=0)) == 0.0)
+try:
+    budget.daily_cap_usd(make_cfg(cap="abc"))
+    _raised = False
+except budget.BudgetCapInvalid:
+    _raised = True
+check("daily_cap_usd REFUSES a non-numeric cap instead of reading it as unlimited",
+      _raised)
 check("daily_cap_usd None when no copy block", budget.daily_cap_usd({}) is None)
 
 check("premium_enabled True", budget.premium_enabled(make_cfg(premium=True)) is True)

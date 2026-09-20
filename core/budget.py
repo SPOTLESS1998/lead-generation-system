@@ -63,16 +63,54 @@ def _rates(model):
     return _ANTHROPIC_PRICES["opus"]   # opus / unknown -> price as the expensive tier
 
 
+class BudgetCapInvalid(Exception):
+    """Raised when premium_daily_usd_cap is set but is not a usable number."""
+
+
 def daily_cap_usd(cfg):
-    """The per-client daily cap on real-Claude spend. None => unlimited (no guard)."""
-    cap = _copy_block(cfg).get("premium_daily_usd_cap", None)
+    """The per-client daily cap on real-Claude spend. None => unlimited (no guard).
+
+    A cap that is ABSENT or explicitly null means "uncapped", which is a
+    deliberate choice an operator can make. A cap that is PRESENT but unusable
+    ("$5", "5 USD", "", -1) is a mistake, and it used to be treated as uncapped
+    too: float() raised, we returned None, and None is the sentinel for
+    unlimited. So a typo in the one config value whose job is to bound real
+    money silently removed the bound, and /health rendered "uncapped ·
+    Remaining today: ∞" — indistinguishable from having meant it.
+
+    Now a malformed cap fails CLOSED: it raises, and premium_allowed treats that
+    as "not allowed". Refusing to spend on a broken config is recoverable in one
+    edit; spending without a ceiling is not. Note this is the only value in the
+    system denominated in real dollars, which is why it gets the strict reading
+    while the rest of config degrades gracefully.
+    """
+    block = _copy_block(cfg)
+    if "premium_daily_usd_cap" not in block:
+        return None                       # absent => uncapped, on purpose
+    cap = block.get("premium_daily_usd_cap")
     if cap is None:
-        return None
+        return None                       # explicit null => uncapped, on purpose
+    if isinstance(cap, bool):
+        # True/False are ints in Python; a boolean here is always a mistake and
+        # True would otherwise become a $1.00 cap.
+        raise BudgetCapInvalid(
+            f"premium_daily_usd_cap is {cap!r} (a boolean). Set a number, or null "
+            f"for no cap.")
     try:
         cap = float(cap)
     except (TypeError, ValueError):
-        return None
-    return cap if cap > 0 else None
+        raise BudgetCapInvalid(
+            f"premium_daily_usd_cap is {cap!r}, which is not a number. Write it as a "
+            f"bare number (5 or 5.0), not a string with a currency symbol. Premium "
+            f"copy is DISABLED until this is fixed — a malformed cap must never be "
+            f"read as 'no cap'.")
+    if cap != cap or cap in (float("inf"), float("-inf")):   # NaN / inf
+        raise BudgetCapInvalid(f"premium_daily_usd_cap is {cap!r}, which is not finite.")
+    if cap < 0:
+        raise BudgetCapInvalid(
+            f"premium_daily_usd_cap is {cap!r}. A negative cap is meaningless; use 0 "
+            f"to disable premium spend, or null for no cap.")
+    return cap if cap > 0 else 0.0        # 0 => spend nothing (NOT unlimited)
 
 
 def premium_enabled(cfg):
@@ -98,8 +136,16 @@ def spent_today_usd(conn, cfg):
 
 
 def remaining_usd(conn, cfg):
-    """$ left under today's cap, or None if there is no cap (unlimited)."""
-    cap = daily_cap_usd(cfg)
+    """$ left under today's cap, or None if there is no cap (unlimited).
+
+    A malformed cap returns 0.0, not None: premium is refused, so there is
+    nothing remaining. Returning None here would render as "∞" on /health, which
+    is the exact lie this is meant to stop.
+    """
+    try:
+        cap = daily_cap_usd(cfg)
+    except BudgetCapInvalid:
+        return 0.0
     if cap is None:
         return None
     return round(max(0.0, cap - spent_today_usd(conn, cfg)), 6)
@@ -109,9 +155,18 @@ def premium_allowed(conn, cfg):
     """True if premium copy is ON and today's real-Claude spend is still under the cap."""
     if not premium_enabled(cfg):
         return False
-    cap = daily_cap_usd(cfg)
+    try:
+        cap = daily_cap_usd(cfg)
+    except BudgetCapInvalid as e:
+        # Fail CLOSED. The guard is unreadable, so we do not spend real money
+        # behind it. Loud, because the operator has to fix a config value and
+        # nothing else in the run will tell them.
+        print(f"⚠️  premium copy DISABLED: {e}")
+        return False
     if cap is None:
         return True   # premium on, no cap set
+    if cap <= 0:
+        return False  # cap of 0 => spend nothing
     return spent_today_usd(conn, cfg) < cap
 
 
@@ -135,11 +190,22 @@ def copy_cfg(conn, cfg):
 
 
 def status(conn, cfg):
-    """A small dict for /health: is premium on, the cap, spent today, remaining."""
+    """A small dict for /health: is premium on, the cap, spent today, remaining.
+
+    `cap_error` carries a malformed-cap message so the page can say so outright
+    instead of rendering the misconfiguration as "uncapped · ∞".
+    """
+    cap = None
+    cap_error = None
+    try:
+        cap = daily_cap_usd(cfg)
+    except BudgetCapInvalid as e:
+        cap_error = str(e)
     return {
         "premium": premium_enabled(cfg),
         "model": premium_model(cfg),
-        "cap_usd": daily_cap_usd(cfg),
+        "cap_usd": cap,
+        "cap_error": cap_error,
         "spent_today_usd": spent_today_usd(conn, cfg),
         "remaining_usd": remaining_usd(conn, cfg),
         "allowed_now": premium_allowed(conn, cfg),
