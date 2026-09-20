@@ -21,10 +21,21 @@ from email.mime.multipart import MIMEMultipart
 
 from . import state
 from . import verify
+from . import suppression
 
 
 class SendCapExceeded(Exception):
     """Raised when a send would exceed a per-mailbox or global daily cap."""
+
+
+class SuppressedRecipient(Exception):
+    """Raised when the recipient is on the never-contact list.
+
+    Deliberately NOT configurable. Every other gate here has an off switch
+    because it trades volume against risk; this one is a legal obligation
+    (CAN-SPAM) and a promise we made in the footer of the email that produced
+    the opt-out. There is no legitimate reason to disable it, so there is no flag.
+    """
 
 
 class UnverifiedRecipient(Exception):
@@ -215,6 +226,26 @@ class SendingPool:
         not interested) injected between the body and the CAN-SPAM footer. Like
         `footer_html`, `cta_html` is trusted raw HTML built by core/compliance.py.
         """
+        # NEVER-CONTACT GATE — first, before caps, verification, or anything else.
+        #
+        # This is the last line of defence for the one mistake a cold-email system
+        # must never make. Suppression was previously checked only at DRAFT time, so
+        # the window between "draft queued" and "operator clicks Approve" was
+        # completely unguarded: a prospect could click Unsubscribe, be added to the
+        # list, and still be emailed minutes later because their draft was already
+        # sitting in the queue and the approve path never re-read the list.
+        #
+        # It lives HERE rather than in the approve route because this is the single
+        # chokepoint every prospect-facing message passes through — cold pitches and
+        # threaded replies alike. Operator mail (digest, healer, heartbeat, reminders)
+        # calls smtp_deliver directly and is correctly unaffected.
+        #
+        # Checked against the LOGICAL recipient, so controlled mode cannot mask it.
+        if suppression.is_suppressed(conn, self.client, to_email):
+            raise SuppressedRecipient(
+                f"{to_email} is on the never-contact list (unsubscribed, bounced, "
+                f"or manually suppressed) — refusing to send")
+
         if state.sends_today(conn, self.client) >= self.global_cap:
             raise SendCapExceeded(f"daily global cap reached ({self.global_cap})")
         mailbox = self.pick_mailbox(conn)

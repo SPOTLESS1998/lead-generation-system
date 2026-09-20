@@ -86,6 +86,32 @@ def set_pending_status(lead_id, status):
         _write(leads)
 
 
+def retire_drafts_for(client, email, status="suppressed"):
+    """Take every live draft for `email` off the approval queue. Returns the count.
+
+    Called the moment someone opts out. The suppression list alone is not enough:
+    the queue is a separate JSON file, so an opted-out prospect's draft stayed
+    `pending`, kept rendering on the dashboard, and stayed one click from being
+    sent. core/sender.py refuses that send outright now — but leaving the draft on
+    screen invites the operator to click a button that can only fail, and makes the
+    dashboard misreport how much work is actually waiting.
+
+    Only touches `pending` entries. A draft already approved/sent/declined is
+    history and must not be rewritten.
+    """
+    leads = load_pending()
+    n = 0
+    for entry in leads.values():
+        if (entry.get("client") == client
+                and entry.get("target_email") == email
+                and entry.get("status") == "pending"):
+            entry["status"] = status
+            n += 1
+    if n:
+        _write(leads)
+    return n
+
+
 def emails_with_live_draft(client):
     """Addresses that already have an APPROVABLE draft waiting, for this client.
 

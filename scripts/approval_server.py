@@ -269,6 +269,19 @@ def approve(lead_id):
                 list_unsubscribe=unsub,
                 cta_html=cta_html, cta_text=cta_text,
             )
+    except sender.SuppressedRecipient as e:
+        # They opted out while this draft sat in the queue. Take it off the board
+        # so the operator is not left clicking a button that can only fail.
+        review.retire_drafts_for(client, to_email)
+        return page("Not Sent — This Person Opted Out",
+                    f"{e}. The draft has been removed from the queue. This is "
+                    f"working as intended: honouring an opt-out is a legal "
+                    f"obligation, not an option.", "🚫"), 409
+    except sender.UnverifiedRecipient as e:
+        return page("Not Sent — Undeliverable Address",
+                    f"{e}. The draft is still in the queue, so nothing is lost. "
+                    f"Sending to a provably dead address only costs the sending "
+                    f"domain a hard bounce.", "📭"), 422
     except sender.SendCapExceeded as e:
         return page("Daily Limit Reached",
                     f"Not sent: {e}. This protects the sending domain's reputation. "
@@ -308,7 +321,11 @@ def unsubscribe(token):
         suppression.add(conn, client, email, reason="unsubscribed")
     finally:
         conn.close()
-    print(f"\n[!] UNSUBSCRIBE: {email} (client={client}) added to suppression list.")
+    # Also pull any draft still waiting for approval off the queue. Suppression
+    # alone left it on the dashboard, one click from a send the sender now refuses.
+    retired = review.retire_drafts_for(client, email)
+    print(f"\n[!] UNSUBSCRIBE: {email} (client={client}) added to suppression list"
+          f"{f'; retired {retired} queued draft(s)' if retired else ''}.")
     return page("Unsubscribed",
                 f"<b>{email}</b> has been removed and will not be contacted again."), 200
 
@@ -415,7 +432,9 @@ def not_interested(token):
         suppression.add(conn, client, email, reason="not_interested")
     finally:
         conn.close()
-    print(f"\n[!] NOT-INTERESTED click: {email} (client={client}) suppressed.")
+    retired = review.retire_drafts_for(client, email)
+    print(f"\n[!] NOT-INTERESTED click: {email} (client={client}) suppressed"
+          f"{f'; retired {retired} queued draft(s)' if retired else ''}.")
     return page("No problem — thanks for letting us know",
                 "We won't email you again. Changed your mind? Just reply to our last "
                 "email and we'll pick things up.", "👍"), 200
