@@ -1,20 +1,23 @@
 # Go-live: hosting the approval + audit server on the VPS
 
-> **⚠️ DOMAIN STATUS (updated 2026-09-03) — read before using this runbook.**
-> The domain is the **#1 go-live blocker: `ejentic.xyz` is not registered yet**
-> (the old `ejentic.ai` / `.com` are owned by other people). Register `ejentic.xyz`
-> first; then everything below applies. **Second caveat:** this runbook was written
-> assuming the Ejentic **website was already live** on the domain and we were only
-> *adding* the audit subdomain. That's no longer true — the site isn't live on
-> `ejentic.xyz` yet either. So wherever a step says "the Caddyfile already serving
-> `ejentic.xyz`" or "confirm `ejentic.xyz` already points at the box," treat that as
-> **part of this same deploy**, not a pre-existing fact.
+> **✅ STATUS (updated 2026-09-20).** The blocker described here is gone.
+> `ejentic.xyz` is registered, the website is live on it, `audit.ejentic.xyz`
+> resolves to the box over HTTPS behind a password, and the approval service and
+> daily pipeline both run there. **Everything in this file is now DONE** — keep it
+> as the explanation of *why* hosting is central and where the data lives, not as
+> a to-do list.
+>
+> **For what is actually left, see [`GO_LIVE_RUNBOOK.md`](GO_LIVE_RUNBOOK.md).**
+> The remaining work is cold-outreach sending, which needs a **separate domain**:
+> `ejentic.xyz` publishes DMARC `p=reject` with an SPF record that authorises only
+> Porkbun's forwarders, so mail sent as `@ejentic.xyz` through Gmail SMTP is
+> rejected outright — and you would not want outreach complaints landing on the
+> domain that carries the website and transactional mail anyway.
 
 **Decision (2026-09-01):** the approval/audit server runs centrally on the Ejentic
 VPS (`88.96.57.79`, same box as the website), behind Caddy, at **one subdomain
-`audit.ejentic.xyz`** that serves every client. Deploy when the domain's DNS is
-live (planned this week). Nothing goes live — and no real emails are sent — until
-that domain exists AND it's an explicit decision.
+`audit.ejentic.xyz`** that serves every client. Nothing goes live — and no real
+emails are sent — until it's an explicit decision.
 
 ## Why central hosting
 The audit links, the approve/decline dashboard, and the one-click reply buttons
