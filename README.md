@@ -83,3 +83,7 @@ contact details are committed here, and real credentials live only in the gitign
 Working and deployed, with the approval queue running behind a reverse proxy (see
 [deploy/GO_LIVE_RUNBOOK.md](deploy/GO_LIVE_RUNBOOK.md)). The pipeline itself currently runs from a
 workstation rather than a server — moving it to always-on hosting is the next step.
+
+---
+
+Built by [Ejentic AI](https://ejentic.xyz) — AI agents and automation for businesses. Abuja, Nigeria.
