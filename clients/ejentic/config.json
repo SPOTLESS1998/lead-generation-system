@@ -129,10 +129,12 @@
     },
     "mailboxes": [
       {
-        "smtp_host": "smtp.gmail.com",
+        "smtp_host": "smtp.zoho.com",
         "smtp_port": 587,
-        "user_env": "SMTP_USER",
-        "pass_env": "SMTP_PASS",
+        "imap_host": "imap.zoho.com",
+        "imap_port": 993,
+        "user_env": "OUTREACH_SMTP_USER",
+        "pass_env": "OUTREACH_SMTP_PASS",
         "daily_cap": 40
       }
     ],
