@@ -76,14 +76,16 @@ from core import sender                         # noqa: E402
 # no `sending.warmup_seed.ramp`. These are MECHANICS defaults (a safe starting
 # shape for any new domain), not a tenant's business numbers — a client tunes the
 # real values in its config, exactly like the prospect `sending.warmup.ramp`.
-# It is intentionally slower than the prospect ramp (5/10/20/30/40): a novelty
-# TLD like .xyz starts in a deeper hole and should open up later, not sooner.
+# This ramp is a CEILING, not a quota: each day we send min(cap, seeds available),
+# so a small seed list is self-limiting (4 seeds => <=4/day whatever the cap says).
+# Compressed to a ~20-day target at the operator's request; the real accelerant is
+# MORE engaged seed inboxes + daily engagement, not larger numbers here.
 DEFAULT_RAMP = [
-    {"through_day": 7,  "cap": 3},
-    {"through_day": 14, "cap": 6},
-    {"through_day": 21, "cap": 10},
-    {"through_day": 30, "cap": 15},
-    {"through_day": 45, "cap": 25},
+    {"through_day": 2,  "cap": 4},
+    {"through_day": 5,  "cap": 8},
+    {"through_day": 9,  "cap": 15},
+    {"through_day": 14, "cap": 25},
+    {"through_day": 20, "cap": 40},
 ]
 
 # Last-resort backstop: never put more than this many warm-up messages on the

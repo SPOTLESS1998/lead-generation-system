@@ -166,11 +166,11 @@
     "warmup_seed": {
       "enabled": true,
       "ramp": [
-        { "through_day": 7, "cap": 3 },
-        { "through_day": 14, "cap": 6 },
-        { "through_day": 21, "cap": 10 },
-        { "through_day": 30, "cap": 15 },
-        { "through_day": 45, "cap": 25 }
+        { "through_day": 2, "cap": 4 },
+        { "through_day": 5, "cap": 8 },
+        { "through_day": 9, "cap": 15 },
+        { "through_day": 14, "cap": 25 },
+        { "through_day": 20, "cap": 40 }
       ],
       "spacing_seconds": {
         "min": 90,
