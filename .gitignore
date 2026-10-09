@@ -9,6 +9,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# --- Warm-up seed lists: consenting recipients, never commit (template IS tracked) ---
+clients/*/warmup_seeds.txt
+
 # --- Runtime state (per-client, machine-local) ---
 data/
 *.sqlite

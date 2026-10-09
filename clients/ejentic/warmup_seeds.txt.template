@@ -1,0 +1,25 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Warm-up seed list  —  consenting recipients ONLY
+# ─────────────────────────────────────────────────────────────────────────
+# Copy this file to  warmup_seeds.txt  (same folder) and fill it in.
+#   cp clients/<client>/warmup_seeds.txt.template clients/<client>/warmup_seeds.txt
+#
+# scripts/warmup_send.py sends a few small, personal warm-up emails per day to
+# the addresses listed here, so those people can REPLY / mark "not spam" and
+# teach the mail providers that this domain is legitimate.
+#
+# RULES
+#   • One email address per line.
+#   • Only addresses you control, or people who have AGREED to receive these.
+#     These are NOT prospects. Never put a stranger here.
+#   • '#' starts a comment; blank lines are ignored.
+#   • Both  name@example.com  and  Name <name@example.com>  work.
+#   • The real warmup_seeds.txt is gitignored — it never gets committed.
+#
+# TIP: spread across providers (Gmail, Outlook, Yahoo) for a stronger signal,
+# and pick people who will actually reply — a reply is the #1 reputation signal.
+#
+# Examples (delete these, add your own):
+# you@gmail.com
+# your.other@outlook.com
+# a.friend@yahoo.com

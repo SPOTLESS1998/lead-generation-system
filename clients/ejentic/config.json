@@ -163,6 +163,20 @@
         }
       ]
     },
+    "warmup_seed": {
+      "enabled": true,
+      "ramp": [
+        { "through_day": 7, "cap": 3 },
+        { "through_day": 14, "cap": 6 },
+        { "through_day": 21, "cap": 10 },
+        { "through_day": 30, "cap": 15 },
+        { "through_day": 45, "cap": 25 }
+      ],
+      "spacing_seconds": {
+        "min": 90,
+        "max": 420
+      }
+    },
     "verify_recipients": {
       "enabled": true,
       "timeout_seconds": 5,
